@@ -201,6 +201,7 @@ export default function ExamSession() {
         scorePercent,
         timeTaken,
         answers,
+        questionIds:     questions.map(q => q.id),
         completedAt: serverTimestamp(),
       });
 

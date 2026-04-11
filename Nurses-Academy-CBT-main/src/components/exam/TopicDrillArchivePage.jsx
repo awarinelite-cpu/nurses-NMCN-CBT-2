@@ -8,7 +8,7 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { collection, getDocs, query, where, orderBy } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
 import { DEFAULT_NURSING_COURSES } from '../../data/categories';
@@ -53,7 +53,6 @@ export default function TopicDrillArchivePage() {
             collection(db, 'examSessions'),
             where('userId',   '==', user.uid),
             where('examType', '==', 'topic_drill'),
-            orderBy('completedAt', 'desc')
           )),
         ]);
         setPublishedExams(
@@ -61,7 +60,15 @@ export default function TopicDrillArchivePage() {
               .filter(e => e.active !== false)
               .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
           );
-        setSessions(sessSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        setSessions(
+          sessSnap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .sort((a, b) => {
+              const ta = a.completedAt?.toDate?.()?.getTime?.() || 0;
+              const tb = b.completedAt?.toDate?.()?.getTime?.() || 0;
+              return tb - ta;
+            })
+        );
       } catch (e) { console.error(e); }
       finally { setLoading(false); }
     };

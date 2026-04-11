@@ -7,23 +7,24 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { collection, getDocs, query, where, orderBy } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
-import { DEFAULT_NURSING_COURSES } from '../../data/categories';
+import { DEFAULT_NURSING_COURSES, NURSING_CATEGORIES } from '../../data/categories';
 
 export default function CourseDrillArchivePage() {
   const { user }   = useAuth();
   const navigate   = useNavigate();
   const [urlParams] = useSearchParams();
 
-  const [allCourses,     setAllCourses]     = useState([]);
-  const [publishedExams, setPublishedExams] = useState([]); // all exams from 'exams' collection
-  const [sessions,       setSessions]       = useState([]); // student's attempts
-  const [selectedCourse, setSelectedCourse] = useState(null);  // may be set from URL param
-  const [selectedExam,   setSelectedExam]   = useState(null);
-  const [loading,        setLoading]        = useState(true);
-  const [search,         setSearch]         = useState('');
+  const [allCourses,        setAllCourses]        = useState([]);
+  const [publishedExams,    setPublishedExams]    = useState([]);
+  const [sessions,          setSessions]          = useState([]);
+  const [selectedSpecialty, setSelectedSpecialty] = useState(null); // NEW — Level 0
+  const [selectedCourse,    setSelectedCourse]    = useState(null);
+  const [selectedExam,      setSelectedExam]      = useState(null);
+  const [loading,           setLoading]           = useState(true);
+  const [search,            setSearch]            = useState('');
 
   // Load courses
   useEffect(() => {
@@ -47,7 +48,12 @@ export default function CourseDrillArchivePage() {
     const courseParam = urlParams.get('course');
     if (courseParam) {
       const found = allCourses.find(c => c.id === courseParam);
-      if (found) setSelectedCourse(found);
+      if (found) {
+        // Also auto-select the specialty so breadcrumb is correct
+        const specialty = NURSING_CATEGORIES.find(cat => cat.id === found.category);
+        if (specialty) setSelectedSpecialty(specialty);
+        setSelectedCourse(found);
+      }
     }
   }, [allCourses]);
 
@@ -66,7 +72,6 @@ export default function CourseDrillArchivePage() {
             collection(db, 'examSessions'),
             where('userId',   '==', user.uid),
             where('examType', '==', 'course_drill'),
-            orderBy('completedAt', 'desc')
           )),
         ]);
 const allExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -76,7 +81,15 @@ const allExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
               .filter(e => e.active !== false)
               .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
           );
-        setSessions(sessSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        setSessions(
+          sessSnap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .sort((a, b) => {
+              const ta = a.completedAt?.toDate?.()?.getTime?.() || 0;
+              const tb = b.completedAt?.toDate?.()?.getTime?.() || 0;
+              return tb - ta;
+            })
+        );
       } catch (e) {
         console.error(e);
       } finally {
@@ -109,10 +122,6 @@ const allExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     sessionsByExam[key].push(s);
   });
 
-  const filteredCourses = allCourses.filter(c =>
-    !search || c.label.toLowerCase().includes(search.toLowerCase())
-  );
-
   // ── Level 3: Exam attempts ─────────────────────────────────────
   if (selectedCourse && selectedExam) {
     const attempts = sessionsByExam[selectedExam.id] || [];
@@ -132,7 +141,9 @@ const allExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
             {selectedCourse.icon || '📖'}
           </div>
           <div>
-            <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:2 }}>{selectedCourse.label}</div>
+            <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:2 }}>
+              {selectedSpecialty?.icon} {selectedSpecialty?.shortLabel} › {selectedCourse.label}
+            </div>
             <h2 style={{ fontFamily:"'Playfair Display',serif", margin:0, color:'var(--text-primary)', fontSize:'1.2rem' }}>
               {selectedExam.name}
             </h2>
@@ -188,13 +199,13 @@ const allExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   }
 
   // ── Level 2: Published exams for selected course ───────────────
-  if (selectedCourse) {
+  if (selectedSpecialty && selectedCourse) {
     const examsForCourse = publishedExams.filter(e => e.course === selectedCourse.id);
 
     return (
       <div style={{ padding:'24px', maxWidth:900 }}>
         <button onClick={() => setSelectedCourse(null)} style={styles.backBtn}>
-          ← Back to Courses
+          ← Back to {selectedSpecialty.shortLabel} Courses
         </button>
 
         <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:24 }}>
@@ -252,7 +263,95 @@ const allExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     );
   }
 
-  // ── Level 1: Courses grid ──────────────────────────────────────
+  // ── Level 1: Courses grid for selected specialty ──────────────
+  if (selectedSpecialty) {
+    const coursesForSpecialty = allCourses.filter(c => c.category === selectedSpecialty.id);
+    const filtered = coursesForSpecialty.filter(c =>
+      !search || c.label.toLowerCase().includes(search.toLowerCase())
+    );
+
+    return (
+      <div style={{ padding:'24px', maxWidth:900 }}>
+        <button onClick={() => { setSelectedSpecialty(null); setSearch(''); }} style={styles.backBtn}>
+          ← Back to Specialties
+        </button>
+
+        <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:24,
+          padding:'16px 20px',
+          background: `${selectedSpecialty.color}12`,
+          border: `1.5px solid ${selectedSpecialty.color}30`,
+          borderRadius:14,
+        }}>
+          <div style={{
+            width:52, height:52, borderRadius:14, flexShrink:0,
+            background:`${selectedSpecialty.color}22`,
+            display:'flex', alignItems:'center', justifyContent:'center', fontSize:26,
+          }}>
+            {selectedSpecialty.icon}
+          </div>
+          <div>
+            <div style={{ fontWeight:800, fontSize:17, color:'var(--text-primary)' }}>
+              {selectedSpecialty.label}
+            </div>
+            <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:2 }}>
+              {coursesForSpecialty.length} course{coursesForSpecialty.length !== 1 ? 's' : ''} · Select one to view exams
+            </div>
+          </div>
+        </div>
+
+        <input className="form-input"
+          style={{ width:'100%', maxWidth:320, marginBottom:20, height:40 }}
+          placeholder="🔍 Search courses…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+
+        {loading ? (
+          <div style={styles.emptyState}><span className="spinner" /> Loading…</div>
+        ) : filtered.length === 0 ? (
+          <div style={styles.emptyState}>
+            <div style={{ fontSize:48, marginBottom:12 }}>📭</div>
+            <div style={{ fontWeight:700, color:'var(--text-primary)', marginBottom:6 }}>No courses found</div>
+          </div>
+        ) : (
+          <div style={styles.grid}>
+            {filtered.map(course => {
+              const examsCount    = publishedExams.filter(e => e.course === course.id).length;
+              const courseExamIds = publishedExams.filter(e => e.course === course.id).map(e => e.id);
+              const attemptCount  = sessions.filter(s => courseExamIds.includes(s.examId)).length;
+              return (
+                <button key={course.id}
+                  onClick={() => { setSelectedCourse(course); setSearch(''); }}
+                  style={{
+                    ...styles.courseCard,
+                    borderColor: `${selectedSpecialty.color}40`,
+                    background: `${selectedSpecialty.color}08`,
+                  }}>
+                  <div style={{ ...styles.iconBox, background:`${selectedSpecialty.color}20` }}>
+                    {course.icon || '📖'}
+                  </div>
+                  <div style={{ fontWeight:700, fontSize:13, color:'var(--text-primary)', textAlign:'center', lineHeight:1.3 }}>
+                    {course.label}
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:4, textAlign:'center' }}>
+                    {examsCount > 0
+                      ? `${examsCount} exam${examsCount !== 1 ? 's' : ''} · ${attemptCount} attempt${attemptCount !== 1 ? 's' : ''}`
+                      : 'No exams yet'}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Level 0: Specialty picker ──────────────────────────────────
+  const specialtiesWithCourses = NURSING_CATEGORIES.filter(cat =>
+    allCourses.some(c => c.category === cat.id)
+  );
+
   return (
     <div style={{ padding:'24px', maxWidth:900 }}>
       <div style={{ marginBottom:28 }}>
@@ -263,37 +362,43 @@ const allExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
           </h2>
         </div>
         <p style={{ color:'var(--text-muted)', fontSize:14, margin:0 }}>
-          Select a course to see all published exams and your past attempts.
+          Choose a nursing specialty to browse courses and your past exam attempts.
         </p>
       </div>
-
-      <input className="form-input"
-        style={{ width:'100%', maxWidth:320, marginBottom:20, height:40 }}
-        placeholder="🔍 Search courses…"
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-      />
 
       {loading ? (
         <div style={styles.emptyState}><span className="spinner" /> Loading…</div>
       ) : (
-        <div style={styles.grid}>
-          {filteredCourses.map(course => {
-            const examsCount    = publishedExams.filter(e => e.course === course.id).length;
-            const courseExamIds = publishedExams.filter(e => e.course === course.id).map(e => e.id);
-            const attemptCount  = sessions.filter(s => courseExamIds.includes(s.examId)).length;
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(260px, 1fr))', gap:12 }}>
+          {specialtiesWithCourses.map(cat => {
+            const catCourseIds  = allCourses.filter(c => c.category === cat.id).map(c => c.id);
+            const catExamIds    = publishedExams.filter(e => catCourseIds.includes(e.course)).map(e => e.id);
+            const examCount     = publishedExams.filter(e => catCourseIds.includes(e.course)).length;
+            const attemptCount  = sessions.filter(s => catExamIds.includes(s.examId)).length;
 
             return (
-              <button key={course.id} onClick={() => setSelectedCourse(course)} style={styles.courseCard}>
-                <div style={styles.iconBox}>{course.icon || '📖'}</div>
-                <div style={{ fontWeight:700, fontSize:13, color:'var(--text-primary)', textAlign:'center', lineHeight:1.3 }}>
-                  {course.label}
+              <button key={cat.id}
+                onClick={() => setSelectedSpecialty(cat)}
+                style={{
+                  ...styles.specialtyCard,
+                  borderColor: `${cat.color}60`,
+                  background:  `${cat.color}0D`,
+                }}>
+                <div style={{ position:'absolute', left:0, top:0, bottom:0, width:4, borderRadius:'4px 0 0 4px', background:cat.color }} />
+                <div style={{ ...styles.iconBox, background:`${cat.color}20`, fontSize:26, width:52, height:52, borderRadius:14 }}>
+                  {cat.icon}
                 </div>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:4, textAlign:'center' }}>
-                  {examsCount > 0
-                    ? `${examsCount} exam${examsCount !== 1 ? 's' : ''} · ${attemptCount} attempt${attemptCount !== 1 ? 's' : ''}`
-                    : 'No exams yet'}
+                <div style={{ flex:1, textAlign:'left' }}>
+                  <div style={{ fontWeight:700, fontSize:14, color:'var(--text-primary)', marginBottom:2 }}>
+                    {cat.shortLabel}
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--text-muted)' }}>
+                    {examCount > 0
+                      ? `${examCount} exam${examCount !== 1 ? 's' : ''} · ${attemptCount} attempt${attemptCount !== 1 ? 's' : ''}`
+                      : 'No exams yet'}
+                  </div>
                 </div>
+                <span style={{ color:cat.color, fontSize:18, fontWeight:900, flexShrink:0 }}>→</span>
               </button>
             );
           })}
@@ -320,6 +425,14 @@ const styles = {
     background:'none', border:'none', cursor:'pointer',
     color:'var(--teal)', fontWeight:700, fontSize:13,
     padding:0, marginBottom:20, display:'flex', alignItems:'center', gap:6,
+  },
+  specialtyCard: {
+    display:'flex', alignItems:'center', gap:14,
+    padding:'16px 18px', borderRadius:14,
+    border:'1.5px solid', cursor:'pointer',
+    fontFamily:'inherit', transition:'all 0.2s',
+    position:'relative', overflow:'hidden',
+    background:'var(--bg-card)',
   },
   grid: { display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(150px, 1fr))', gap:12 },
   courseCard: {

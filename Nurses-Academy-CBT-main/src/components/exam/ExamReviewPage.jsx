@@ -120,8 +120,11 @@ export default function ExamReviewPage() {
         setSession(sessionData);
 
         // Load question docs
+        // Use saved questionIds (full list) if available; fall back to answered keys for old sessions
         const savedAnswers = sessionData.answers || {};
-        const questionIds  = Object.keys(savedAnswers);
+        const questionIds  = sessionData.questionIds?.length > 0
+          ? sessionData.questionIds
+          : Object.keys(savedAnswers);
 
         if (questionIds.length === 0) {
           setLoading(false);
