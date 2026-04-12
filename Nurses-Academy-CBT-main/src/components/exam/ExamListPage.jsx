@@ -16,7 +16,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
-  collection, getDocs, query, where, orderBy,
+  collection, getDocs, query, where,
 } from 'firebase/firestore';
 import { db }      from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
@@ -45,11 +45,11 @@ export default function ExamListPage() {
     const load = async () => {
       setLoading(true);
       try {
-        // Build exam query constraints
+        // Build exam query constraints — NO orderBy (avoids composite index requirement)
+        // Sorting is done in JS after fetch instead.
         let constraints = [
           where('examType', '==', examType),
           where('active',   '==', true),
-          orderBy('createdAt', 'desc'),
         ];
 
         if (examType === 'daily_practice') {
@@ -62,7 +62,16 @@ export default function ExamListPage() {
         }
 
         const examSnap = await getDocs(query(collection(db, 'exams'), ...constraints));
-        setExams(examSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        const fetchedExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+        // Sort newest first in JS — no composite index needed
+        fetchedExams.sort((a, b) => {
+          const at = a.createdAt?.toDate?.() || new Date(0);
+          const bt = b.createdAt?.toDate?.() || new Date(0);
+          return bt - at;
+        });
+
+        setExams(fetchedExams);
 
         // Load user's past sessions for these exams
         if (user?.uid) {
