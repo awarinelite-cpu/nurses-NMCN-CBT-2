@@ -180,7 +180,7 @@ export default function TopicDrillPage() {
             {topics.length === 0 ? 'No topics available yet' : 'No topics match your search'}
           </div>
           <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-            {topics.length === 0 && 'Admin hasn't uploaded any topic drill exams for this course.'}
+            {topics.length === 0 && "Admin hasn't uploaded any topic drill exams for this course."}
           </div>
         </div>
       ) : (
