@@ -362,6 +362,14 @@ export default function ExamSession() {
                     </p>
                   </div>
 
+                  {/* Question image in review */}
+                  {q.imageUrl && (
+                    <div style={{ marginBottom: 12, textAlign: 'center' }}>
+                      <img src={q.imageUrl} alt="Question diagram"
+                        style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 10, border: '1px solid var(--border)', objectFit: 'contain' }} />
+                    </div>
+                  )}
+
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
                     {q.options?.map((opt, j) => {
                       const isUser       = !reviewMode && userAns === j;
@@ -400,6 +408,12 @@ export default function ExamSession() {
                       color: 'var(--text-secondary)', marginBottom: 8,
                     }}>
                       💡 {q.explanation}
+                      {q.explanationImageUrl && (
+                        <div style={{ marginTop: 10, textAlign: 'center' }}>
+                          <img src={q.explanationImageUrl} alt="Explanation diagram"
+                            style={{ maxWidth: '100%', maxHeight: 240, borderRadius: 8, border: '1px solid rgba(13,148,136,0.3)', objectFit: 'contain' }} />
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -557,6 +571,14 @@ export default function ExamSession() {
             <p style={{ fontSize: 17, fontWeight: 600, lineHeight: 1.65, color: 'var(--text-primary)', margin: '0 0 20px' }}>
               {q.question}
             </p>
+
+            {/* Question image */}
+            {q.imageUrl && (
+              <div style={{ marginBottom: 16, textAlign: 'center' }}>
+                <img src={q.imageUrl} alt="Question diagram"
+                  style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 10, border: '1px solid var(--border)', objectFit: 'contain' }} />
+              </div>
+            )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {q.options?.map((opt, i) => {
