@@ -40,7 +40,7 @@ export default function QuestionsManager() {
     question: '', options: ['', '', '', ''], correctIndex: 0,
     explanation: '', category: 'general_nursing', examType: 'past_questions',
     year: '2024', subject: '', difficulty: 'medium', source: '', tags: '',
-    topic: '', course: '',
+    topic: '', course: '', imageUrl: '', explanationImageUrl: '',
   };
   const [form, setForm] = useState({ ...BLANK });
 
@@ -108,7 +108,6 @@ export default function QuestionsManager() {
     finally { setLoading(false); }
   };
 
-  // ── Bulk parse ──────────────────────────────────────────────────
   const handleParse = () => {
     setParseErr(''); setParseInfo('');
     if (!bulkText.trim()) { setParseErr('Paste questions first.'); return; }
@@ -442,6 +441,34 @@ export default function QuestionsManager() {
           <div className="form-group">
             <label className="form-label">Explanation (optional)</label>
             <textarea className="form-input" rows={2} value={form.explanation} onChange={e=>setForm(f=>({...f,explanation:e.target.value}))} />
+          </div>
+
+          {/* Question image — URL paste only (Firebase Storage not enabled) */}
+          <div className="form-group">
+            <label className="form-label">📷 Question Image URL (optional)</label>
+            <input className="form-input" placeholder="Paste image URL (e.g. from Imgur, Cloudinary, Google Drive)…"
+              value={form.imageUrl} onChange={e=>setForm(f=>({...f,imageUrl:e.target.value}))} />
+            {form.imageUrl && (
+              <div style={{ marginTop:8, position:'relative', display:'inline-block' }}>
+                <img src={form.imageUrl} alt="Question" style={{ maxWidth:260, maxHeight:160, borderRadius:8, border:'1px solid var(--border)' }} />
+                <button type="button" onClick={() => setForm(f=>({...f,imageUrl:''}))}
+                  style={{ position:'absolute', top:4, right:4, background:'rgba(239,68,68,0.85)', border:'none', borderRadius:'50%', width:22, height:22, color:'#fff', cursor:'pointer', fontSize:12, fontWeight:900 }}>×</button>
+              </div>
+            )}
+          </div>
+
+          {/* Explanation image — URL paste only */}
+          <div className="form-group">
+            <label className="form-label">🖼️ Explanation Image URL (optional)</label>
+            <input className="form-input" placeholder="Paste image URL for explanation diagram…"
+              value={form.explanationImageUrl} onChange={e=>setForm(f=>({...f,explanationImageUrl:e.target.value}))} />
+            {form.explanationImageUrl && (
+              <div style={{ marginTop:8, position:'relative', display:'inline-block' }}>
+                <img src={form.explanationImageUrl} alt="Explanation" style={{ maxWidth:260, maxHeight:160, borderRadius:8, border:'1px solid var(--border)' }} />
+                <button type="button" onClick={() => setForm(f=>({...f,explanationImageUrl:''}))}
+                  style={{ position:'absolute', top:4, right:4, background:'rgba(239,68,68,0.85)', border:'none', borderRadius:'50%', width:22, height:22, color:'#fff', cursor:'pointer', fontSize:12, fontWeight:900 }}>×</button>
+              </div>
+            )}
           </div>
 
           <div style={{ display:'flex', gap:10, marginTop:16 }}>
