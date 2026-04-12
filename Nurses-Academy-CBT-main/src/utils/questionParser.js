@@ -359,6 +359,11 @@ export function parseQuestionsFromText(rawText, answerKeyText = '') {
       .map(([, letter]) => letter);
 
     questions.forEach((q, posIdx) => {
+      // Always apply rationale from answer key if question has no inline explanation
+      if (!q.explanation && rationaleMap[q._qNumber]) {
+        q.explanation = rationaleMap[q._qNumber];
+      }
+
       if (q._hasAnswer) return; // inline answer already resolved — keep it
 
       // 1. Try strict number match: answerKey[3] → question with _qNumber === 3
@@ -387,10 +392,6 @@ export function parseQuestionsFromText(rawText, answerKeyText = '') {
         q._hasAnswer   = true;
       } else {
         q.correctIndex = 0; // no answer found anywhere — default A
-      }
-      // Apply rationale from answer key if question has no inline explanation
-      if (!q.explanation && rationaleMap[q._qNumber]) {
-        q.explanation = rationaleMap[q._qNumber];
       }
     });
   } else {
