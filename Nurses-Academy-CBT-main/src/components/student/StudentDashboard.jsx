@@ -123,9 +123,9 @@ export default function StudentDashboard() {
             <span style={{ fontSize: 14, fontWeight: 700 }}>Mock Exams</span>
           </Link>
 
-          <Link to="/mock-reviews" style={styles.quickCard}>
-            <span style={{ fontSize: 28 }}>🗂️</span>
-            <span style={{ fontSize: 14, fontWeight: 700 }}>Mock Reviews</span>
+          <Link to="/past-questions" style={styles.quickCard}>
+            <span style={{ fontSize: 28 }}>📜</span>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Past Questions</span>
           </Link>
 
           <Link to="/bookmarks" style={styles.quickCard}>
