@@ -39,9 +39,15 @@ const COURSE_CATEGORY_MAP = {
 
 // ── Helper: check if a session still has at least one live question ──────────
 async function sessionHasLiveQuestions(session) {
-  const ids = session.questionIds;
-  // If no questionIds field, keep session (legacy structure)
-  if (!ids || !Array.isArray(ids) || ids.length === 0) return true;
+  let ids = session.questionIds;
+
+  // Fallback for legacy sessions that didn't save questionIds:
+  // derive ids from the keys of the answers map
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    const answerKeys = Object.keys(session.answers || {});
+    if (answerKeys.length === 0) return false; // no ids at all — hide it
+    ids = answerKeys;
+  }
 
   // Sample up to 10 ids — one live question is enough to keep the session
   const sample = ids.slice(0, 10);
