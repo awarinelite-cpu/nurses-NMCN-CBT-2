@@ -25,6 +25,7 @@ export default function TopicDrillPage() {
   const [topics,    setTopics]    = useState([]);  // distinct topics from 'exams' collection
   const [loading,   setLoading]   = useState(false);
   const [search,    setSearch]    = useState('');
+  const [debug,     setDebug]     = useState(null); // ← temporary debug info
 
   // Load all courses once
   useEffect(() => {
@@ -33,14 +34,21 @@ export default function TopicDrillPage() {
         const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         all.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
         setCourses(all);
+        setDebug(d => ({ ...d,
+          coursesLoaded: all.length,
+          coursesSample: all.slice(0, 3).map(c => `${c.id} (category: ${c.category}, active: ${c.active})`),
+        }));
       })
-      .catch(() => {});
+      .catch(e => {
+        setDebug(d => ({ ...d, coursesError: e.message }));
+      });
   }, []);
 
   // Load topics when a course is selected
   useEffect(() => {
     if (!course) return;
     setLoading(true);
+    setDebug(d => ({ ...d, topicsQuery: { examType: 'topic_drill', course: course.id, active: true } }));
     getDocs(query(
       collection(db, 'exams'),
       where('examType', '==', 'topic_drill'),
@@ -49,6 +57,11 @@ export default function TopicDrillPage() {
     ))
       .then(snap => {
         const exams = snap.docs.map(d => d.data());
+        setDebug(d => ({ ...d,
+          examsFound: exams.length,
+          examsSample: exams.slice(0, 3).map(e => `topic:"${e.topic}" totalQ:${e.totalQuestions} active:${e.active}`),
+          examsWithZeroQ: exams.filter(e => (e.totalQuestions || 0) === 0).length,
+        }));
         // Collect distinct non-empty topics from exams that still have questions
         const topicSet = [...new Set(
           exams
@@ -57,7 +70,10 @@ export default function TopicDrillPage() {
         )].sort();
         setTopics(topicSet);
       })
-      .catch(() => setTopics([]))
+      .catch(e => {
+        setDebug(d => ({ ...d, topicsError: e.message }));
+        setTopics([]);
+      })
       .finally(() => setLoading(false));
   }, [course]);
 
@@ -91,6 +107,17 @@ export default function TopicDrillPage() {
 
         <StepIndicator step={1} steps={['Specialty', 'Course', 'Topic', 'Choose Exam', 'Set Up', 'Take Exam']} />
         <div style={styles.sectionHead}>🏥 Choose a Nursing Specialty</div>
+
+        {/* ── TEMP DEBUG PANEL — remove after diagnosis ── */}
+        {debug && (
+          <div style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 11, fontFamily: 'monospace', color: '#94a3b8' }}>
+            <div style={{ color: '#38bdf8', fontWeight: 700, marginBottom: 6 }}>🔍 DEBUG — Courses Firestore Load</div>
+            <div>Total courses loaded: <span style={{ color: '#4ade80' }}>{debug.coursesLoaded ?? '...'}</span></div>
+            {debug.coursesError && <div style={{ color: '#f87171' }}>Error: {debug.coursesError}</div>}
+            {debug.coursesSample?.map((s, i) => <div key={i} style={{ color: '#e2e8f0' }}>  {s}</div>)}
+            <div style={{ marginTop: 6 }}>Specialties with courses shown: <span style={{ color: '#4ade80' }}>{NURSING_CATEGORIES.filter(cat => courses.some(c => c.category === cat.id && c.active !== false)).length}</span></div>
+          </div>
+        )}
 
         <div style={styles.catGrid}>
           {specialtiesWithCourses.map(cat => (
@@ -167,6 +194,19 @@ export default function TopicDrillPage() {
         onClear={() => { setStep(2); setCourse(null); setTopics([]); }} />
 
       <div style={styles.sectionHead}>🎯 Choose a Topic</div>
+
+      {/* ── TEMP DEBUG PANEL — remove after diagnosis ── */}
+      {debug && (
+        <div style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 11, fontFamily: 'monospace', color: '#94a3b8' }}>
+          <div style={{ color: '#38bdf8', fontWeight: 700, marginBottom: 6 }}>🔍 DEBUG — Topic Query</div>
+          <div>Query: examType=<span style={{ color: '#fbbf24' }}>topic_drill</span> course=<span style={{ color: '#fbbf24' }}>{debug.topicsQuery?.course}</span> active=true</div>
+          <div>Exams found: <span style={{ color: '#4ade80' }}>{debug.examsFound ?? '...'}</span></div>
+          <div>Exams with 0 questions (hidden): <span style={{ color: '#f87171' }}>{debug.examsWithZeroQ ?? 0}</span></div>
+          {debug.topicsError && <div style={{ color: '#f87171' }}>Error: {debug.topicsError}</div>}
+          {debug.examsSample?.map((s, i) => <div key={i} style={{ color: '#e2e8f0' }}>  exam {i+1}: {s}</div>)}
+          <div style={{ marginTop: 6 }}>Topics extracted: <span style={{ color: '#4ade80' }}>{topics.length}</span> — {topics.join(', ') || 'none'}</div>
+        </div>
+      )}
 
       {/* Search */}
       <input className="form-input" placeholder="🔍 Search topics..."
