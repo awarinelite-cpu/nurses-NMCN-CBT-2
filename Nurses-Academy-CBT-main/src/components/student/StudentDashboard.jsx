@@ -4,15 +4,7 @@ import { Link } from 'react-router-dom';
 import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
-import { NURSING_CATEGORIES, EXAM_TYPES } from '../../data/categories';
-
-// Reviews & Drills cards — Daily Practice Archive now points to /daily-practice-archive
-const REVIEW_ACTIONS = [
-  { id: 'daily-practice-archive', to: '/daily-practice-archive', icon: '📖', label: 'Daily Practice Archive' },
-  { id: 'mock-reviews',           to: '/mock-reviews',           icon: '🗂️', label: 'Mock Reviews'          },
-  { id: 'course-drill-archive',   to: '/course-drill-archive',   icon: '🗃️', label: 'Course Drill Archive'  },
-  { id: 'topic-drill-archive',    to: '/topic-drill-archive',    icon: '🎯', label: 'Topic Drill Archive'   },
-];
+import { NURSING_CATEGORIES } from '../../data/categories';
 
 export default function StudentDashboard() {
   const { user, profile } = useAuth();
@@ -111,38 +103,36 @@ export default function StudentDashboard() {
         <h3 style={{ ...styles.sectionTitle, marginBottom: 14 }}>⚡ Quick Actions</h3>
         <div style={styles.quickGrid}>
 
-          {/* Daily Practice — goes to /daily-practice (category picker → setup → exam) */}
           <Link to="/daily-practice" style={styles.quickCard}>
             <span style={{ fontSize: 28 }}>⚡</span>
             <span style={{ fontSize: 14, fontWeight: 700 }}>Daily Practice</span>
           </Link>
 
-          {/* Other exam types */}
-          {EXAM_TYPES.filter(et => et.id !== 'daily_practice').map(et => (
-            <Link key={et.id} to={`/exam/categories?type=${et.id}`} style={styles.quickCard}>
-              <span style={{ fontSize: 28 }}>{et.icon}</span>
-              <span style={{ fontSize: 14, fontWeight: 700 }}>{et.label}</span>
-            </Link>
-          ))}
-
-          {/* Course Drill */}
-          <Link to="/exam/categories?type=course_drill" style={styles.quickCard}>
+          <Link to="/course-drill" style={styles.quickCard}>
             <span style={{ fontSize: 28 }}>📖</span>
             <span style={{ fontSize: 14, fontWeight: 700 }}>Course Drill</span>
           </Link>
 
-          {/* Divider */}
-          <div style={styles.reviewDivider}>
-            <span>📂 Reviews & Drills</span>
-          </div>
+          <Link to="/topic-drill" style={styles.quickCard}>
+            <span style={{ fontSize: 28 }}>🎯</span>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Topic Drill</span>
+          </Link>
 
-          {/* Review storage cards */}
-          {REVIEW_ACTIONS.map(r => (
-            <Link key={r.id} to={r.to} style={{ ...styles.quickCard, ...styles.reviewCard }}>
-              <span style={{ fontSize: 28 }}>{r.icon}</span>
-              <span style={{ fontSize: 14, fontWeight: 700 }}>{r.label}</span>
-            </Link>
-          ))}
+          <Link to="/mock-exams" style={styles.quickCard}>
+            <span style={{ fontSize: 28 }}>📋</span>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Mock Exams</span>
+          </Link>
+
+          <Link to="/mock-reviews" style={styles.quickCard}>
+            <span style={{ fontSize: 28 }}>🗂️</span>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Mock Reviews</span>
+          </Link>
+
+          <Link to="/bookmarks" style={styles.quickCard}>
+            <span style={{ fontSize: 28 }}>🔖</span>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Bookmarks</span>
+          </Link>
+
         </div>
       </div>
 
@@ -150,11 +140,10 @@ export default function StudentDashboard() {
       <div style={{ marginBottom: 32 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <h3 style={styles.sectionTitle}>🏥 Exam Categories</h3>
-          <Link to="/exam/categories" style={{ color: 'var(--teal)', fontSize: 13, fontWeight: 700 }}>View all →</Link>
         </div>
         <div style={styles.categoriesGrid}>
           {NURSING_CATEGORIES.slice(0, 8).map(cat => (
-            <Link key={cat.id} to={`/exam/config?category=${cat.id}`} style={styles.catCard}>
+            <div key={cat.id} style={styles.catCard}>
               <div style={{ ...styles.catIcon, background: `${cat.color}22` }}>
                 {cat.icon}
               </div>
@@ -166,8 +155,7 @@ export default function StudentDashboard() {
                   {cat.examType === 'basic' ? 'Basic RN' : 'Post Basic'}
                 </div>
               </div>
-              <div style={{ marginLeft: 'auto', color: cat.color, fontSize: 12, fontWeight: 700 }}>→</div>
-            </Link>
+            </div>
           ))}
         </div>
       </div>
@@ -263,17 +251,6 @@ const styles = {
     transition: 'var(--transition)', textAlign: 'center',
     cursor: 'pointer', position: 'relative',
   },
-  reviewCard: {
-    borderColor: 'rgba(13,148,136,0.3)',
-    background: 'rgba(13,148,136,0.06)',
-  },
-  reviewDivider: {
-    gridColumn: '1 / -1',
-    fontSize: 12, fontWeight: 700, color: 'var(--text-muted)',
-    textTransform: 'uppercase', letterSpacing: 1,
-    display: 'flex', alignItems: 'center', gap: 8,
-    paddingTop: 4,
-  },
   categoriesGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
     gap: 12,
@@ -282,7 +259,6 @@ const styles = {
     display: 'flex', alignItems: 'center', gap: 12,
     padding: '14px 16px', background: 'var(--bg-card)',
     border: '1.5px solid var(--border)', borderRadius: 12,
-    textDecoration: 'none', transition: 'var(--transition)',
   },
   catIcon: {
     width: 40, height: 40, borderRadius: 10,
