@@ -13,8 +13,8 @@
 // courses automatically appear here without any code change.
 
 import { useState, useEffect } from 'react';
-import { useNavigate }          from 'react-router-dom';
-import { collection, getDocs, doc } from 'firebase/firestore';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { collection, getDocs } from 'firebase/firestore';
 import { db }                   from '../../firebase/config';
 import { DEFAULT_NURSING_COURSES, NURSING_CATEGORIES } from '../../data/categories';
 import { useAuth }              from '../../context/AuthContext';
@@ -29,11 +29,18 @@ const TIME_OPTIONS = [
 ];
 
 export default function CourseDrillPage() {
-  const { profile } = useAuth();
-  const navigate    = useNavigate();
+  const { profile }  = useAuth();
+  const navigate     = useNavigate();
+  const [searchParams] = useSearchParams();
 
-  const [step,           setStep]           = useState(1);
-  const [specialty,      setSpecialty]      = useState(null);
+  // If CategoryPickerPage already chose a specialty, pre-select it and skip step 1
+  const presetCategoryId = searchParams.get('category') || '';
+  const presetSpecialty  = presetCategoryId
+    ? NURSING_CATEGORIES.find(c => c.id === presetCategoryId) || null
+    : null;
+
+  const [step,           setStep]           = useState(presetSpecialty ? 2 : 1);
+  const [specialty,      setSpecialty]      = useState(presetSpecialty);
   const [course,         setCourse]         = useState(null);
   const [allCourses,     setAllCourses]     = useState([]);
   const [loadingCourses, setLoadingCourses] = useState(true);
@@ -56,9 +63,16 @@ export default function CourseDrillPage() {
         const custom      = courseSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         const deletedIds  = deletedSnap.docs.map(d => d.id);
         const defIds      = DEFAULT_NURSING_COURSES.map(c => c.id);
-        const extras      = custom.filter(c => !defIds.includes(c.id));
-        // Exclude defaults that admin has hidden
-        const activeDefaults = DEFAULT_NURSING_COURSES.filter(c => !deletedIds.includes(c.id));
+        const customById  = Object.fromEntries(custom.map(c => [c.id, c]));
+
+        // Active defaults — prefer Firestore version if admin updated a default course
+        const activeDefaults = DEFAULT_NURSING_COURSES
+          .filter(c => !deletedIds.includes(c.id))
+          .map(c => customById[c.id] || c);
+
+        // Purely new courses admin added (not in DEFAULT_NURSING_COURSES)
+        const extras = custom.filter(c => !defIds.includes(c.id) && !deletedIds.includes(c.id));
+
         setAllCourses([...activeDefaults, ...extras]);
       } catch {
         setAllCourses(DEFAULT_NURSING_COURSES);
