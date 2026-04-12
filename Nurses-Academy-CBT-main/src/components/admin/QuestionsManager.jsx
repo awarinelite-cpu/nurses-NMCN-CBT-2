@@ -57,6 +57,14 @@ export default function QuestionsManager() {
   const [parseErr,  setParseErr]  = useState('');
   const [parseInfo, setParseInfo] = useState('');
 
+  // ── Load courses from Firestore (replaces DEFAULT_NURSING_COURSES) ──────────
+  const [firestoreCourses, setFirestoreCourses] = useState([]);
+  useEffect(() => {
+    getDocs(query(collection(db, 'courses'), where('active', '==', true), orderBy('label', 'asc')))
+      .then(snap => setFirestoreCourses(snap.docs.map(d => ({ id: d.id, ...d.data() }))))
+      .catch(() => {});
+  }, []);
+
   // ── Load questions ──────────────────────────────────────────────
   const loadQuestions = async () => {
     setLoading(true);
@@ -139,10 +147,10 @@ export default function QuestionsManager() {
 
       let examName = '';
       if (bulkMeta.examType === 'course_drill') {
-        const courseObj = DEFAULT_NURSING_COURSES.find(c => c.id === bulkMeta.course);
+        const courseObj = firestoreCourses.find(c => c.id === bulkMeta.course);
         examName = `${courseObj?.label || bulkMeta.course} — ${dateStr}, ${timeStr}`;
       } else if (bulkMeta.examType === 'topic_drill') {
-        const courseObj = DEFAULT_NURSING_COURSES.find(c => c.id === bulkMeta.course);
+        const courseObj = firestoreCourses.find(c => c.id === bulkMeta.course);
         examName = `${courseObj?.label || bulkMeta.course} › ${bulkMeta.topic} — ${dateStr}, ${timeStr}`;
       } else {
         const catObj  = NURSING_CATEGORIES.find(c => c.id === bulkMeta.category);
@@ -327,7 +335,7 @@ export default function QuestionsManager() {
                 <label className="form-label">Course *</label>
                 <select className="form-input" value={form.course} onChange={e=>setForm(f=>({...f,course:e.target.value}))}>
                   <option value="">— Select Course —</option>
-                  {DEFAULT_NURSING_COURSES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+                  {firestoreCourses.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
                 </select>
               </div>
             )}
@@ -336,7 +344,7 @@ export default function QuestionsManager() {
                 <label className="form-label">Course *</label>
                 <select className="form-input" value={form.course} onChange={e=>setForm(f=>({...f,course:e.target.value}))}>
                   <option value="">— Select Course —</option>
-                  {DEFAULT_NURSING_COURSES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+                  {firestoreCourses.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
                 </select>
               </div>
               <div className="form-group">
@@ -419,7 +427,7 @@ export default function QuestionsManager() {
                 <label className="form-label" style={{ color:'var(--gold)' }}>Course * (required)</label>
                 <select className="form-input" value={bulkMeta.course} onChange={e=>setBulkMeta(m=>({...m,course:e.target.value}))}>
                   <option value="">— Select Course —</option>
-                  {DEFAULT_NURSING_COURSES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+                  {firestoreCourses.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
                 </select>
               </div>
             )}
@@ -459,10 +467,10 @@ export default function QuestionsManager() {
                   const dateStr = now.toLocaleDateString('en-NG', { day:'2-digit', month:'short', year:'numeric' });
                   const timeStr = now.toLocaleTimeString('en-NG', { hour:'2-digit', minute:'2-digit' });
                   if (bulkMeta.examType === 'course_drill') {
-                    const c = DEFAULT_NURSING_COURSES.find(c=>c.id===bulkMeta.course);
+                    const c = firestoreCourses.find(c=>c.id===bulkMeta.course);
                     return `${c?.label || '(select course)'} — ${dateStr}, ${timeStr}`;
                   } else if (bulkMeta.examType === 'topic_drill') {
-                    const c = DEFAULT_NURSING_COURSES.find(c=>c.id===bulkMeta.course);
+                    const c = firestoreCourses.find(c=>c.id===bulkMeta.course);
                     return `${c?.label || '(select course)'} › ${bulkMeta.topic || '(enter topic)'} — ${dateStr}, ${timeStr}`;
                   } else {
                     const c = NURSING_CATEGORIES.find(c=>c.id===bulkMeta.category);
