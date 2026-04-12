@@ -49,9 +49,11 @@ export default function TopicDrillPage() {
     ))
       .then(snap => {
         const exams = snap.docs.map(d => d.data());
-        // Collect distinct non-empty topics, sorted A→Z
+        // Collect distinct non-empty topics from exams that still have questions
         const topicSet = [...new Set(
-          exams.map(e => e.topic).filter(Boolean)
+          exams
+            .filter(e => (e.totalQuestions || 0) > 0)
+            .map(e => e.topic).filter(Boolean)
         )].sort();
         setTopics(topicSet);
       })

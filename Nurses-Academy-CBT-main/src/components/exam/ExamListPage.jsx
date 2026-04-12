@@ -45,8 +45,7 @@ export default function ExamListPage() {
     const load = async () => {
       setLoading(true);
       try {
-        // Build exam query constraints — NO orderBy (avoids composite index requirement)
-        // Sorting is done in JS after fetch instead.
+        // Build exam query — NO orderBy (avoids composite index requirement)
         let constraints = [
           where('examType', '==', examType),
           where('active',   '==', true),
@@ -62,7 +61,10 @@ export default function ExamListPage() {
         }
 
         const examSnap = await getDocs(query(collection(db, 'exams'), ...constraints));
-        const fetchedExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        let fetchedExams = examSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+        // Bug fix: hide exams whose questions have all been deleted
+        fetchedExams = fetchedExams.filter(e => (e.totalQuestions || 0) > 0);
 
         // Sort newest first in JS — no composite index needed
         fetchedExams.sort((a, b) => {
@@ -129,21 +131,41 @@ export default function ExamListPage() {
       ' · ' + d.toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' });
   };
 
-  // ── Navigate to exam setup ─────────────────────────────────────────────────
+  // ── Navigate to exam setup (Take) or directly to session (Review) ──────────
   const goToExam = (exam, reviewMode = false) => {
-    navigate('/exam/setup', {
-      state: {
-        examId:     exam.id,
-        examName:   exam.name,
-        examType,
-        category,
-        course,
-        courseLabel,
-        topic,
-        totalQuestions: exam.totalQuestions || 0,
-        reviewMode,
-      },
-    });
+    if (reviewMode) {
+      // Skip setup page — go straight to review in ExamSession
+      navigate('/exam/session', {
+        state: {
+          examId:         exam.id,
+          examName:       exam.name,
+          examType,
+          category,
+          course,
+          courseLabel,
+          topic,
+          count:          exam.totalQuestions || 40,
+          timeLimit:      0,
+          doShuffle:      false,
+          showExpl:       true,
+          reviewMode:     true,
+        },
+      });
+    } else {
+      navigate('/exam/setup', {
+        state: {
+          examId:         exam.id,
+          examName:       exam.name,
+          examType,
+          category,
+          course,
+          courseLabel,
+          topic,
+          totalQuestions: exam.totalQuestions || 0,
+          reviewMode:     false,
+        },
+      });
+    }
   };
 
   // ── Breadcrumb label ───────────────────────────────────────────────────────
