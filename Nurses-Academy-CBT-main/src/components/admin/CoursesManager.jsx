@@ -3,26 +3,28 @@
 // Route: /admin/courses
 //
 // LAYOUT:
-//   Level 0 — All specialties as cards (with course count)
-//   Level 1 — Click specialty → see its courses (built-ins + custom)
+//   Level 0 — All specialties as cards (with course count + question count)
+//   Level 1 — Click specialty → see its courses
+//             Each course shows: question count, active/inactive toggle, edit, delete
 //             + Add Course button → inline form
-//             + Edit button on EVERY course (built-in or custom)
-//             + Delete/Hide button on every course
 //
 // FIRESTORE:
-//   Custom courses      → 'courses' collection  { label, icon, category, description, createdAt }
-//   Built-in overrides  → 'courses' collection with SAME id as the default course
-//                         (same collection, just an override doc that replaces label/icon)
-//   Deleted defaults    → 'deletedDefaultCourses' collection  { label, deletedAt }
-//     CourseDrillPage skips any default course whose id appears in deletedDefaultCourses.
+//   Courses → 'courses' collection
+//   { label, icon, category, description, active, createdAt, updatedAt }
+//
+//   active: true  → visible to students in Course Drill
+//   active: false → hidden from students (course stays in DB, questions intact)
+//
+// Admin controls everything. No default/built-in courses. Firestore is the
+// single source of truth.
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   collection, getDocs, addDoc, deleteDoc, updateDoc,
-  doc, setDoc, serverTimestamp, orderBy, query,
+  doc, setDoc, serverTimestamp, orderBy, query, where,
 } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { DEFAULT_NURSING_COURSES, NURSING_CATEGORIES } from '../../data/categories';
+import { NURSING_CATEGORIES } from '../../data/categories';
 import { useToast } from '../shared/Toast';
 
 const ICON_OPTIONS = [
@@ -36,102 +38,83 @@ export default function CoursesManager() {
   const { toast } = useToast();
 
   const [selectedSpecialty, setSelectedSpecialty] = useState(null);
-  const [customCourses,     setCustomCourses]     = useState([]);
-  const [deletedDefaults,   setDeletedDefaults]   = useState([]);
+  const [courses,           setCourses]           = useState([]);   // all courses from Firestore
+  const [questionCounts,    setQuestionCounts]    = useState({});   // { courseId: count }
   const [loading,           setLoading]           = useState(true);
   const [saving,            setSaving]            = useState(false);
   const [deletingId,        setDeletingId]        = useState(null);
+  const [togglingId,        setTogglingId]        = useState(null);
   const [showAddForm,       setShowAddForm]       = useState(false);
   const [editId,            setEditId]            = useState(null);
   const [search,            setSearch]            = useState('');
 
   // Add/edit form state
-  const [formLabel,       setFormLabel]       = useState('');
-  const [formIcon,        setFormIcon]        = useState('📖');
-  const [formDesc,        setFormDesc]        = useState('');
-  const [showIconPicker,  setShowIconPicker]  = useState(false);
+  const [formLabel,      setFormLabel]      = useState('');
+  const [formIcon,       setFormIcon]       = useState('📖');
+  const [formDesc,       setFormDesc]       = useState('');
+  const [formActive,     setFormActive]     = useState(true);
+  const [showIconPicker, setShowIconPicker] = useState(false);
 
-  // ── Load data ──────────────────────────────────────────────────
-  const loadData = async () => {
+  // ── Load all courses from Firestore ───────────────────────────────────────
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [courseSnap, deletedSnap] = await Promise.all([
-        getDocs(query(collection(db, 'courses'), orderBy('label', 'asc'))),
-        getDocs(collection(db, 'deletedDefaultCourses')),
-      ]);
-      setCustomCourses(courseSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setDeletedDefaults(deletedSnap.docs.map(d => d.id));
+      const snap = await getDocs(query(collection(db, 'courses'), orderBy('label', 'asc')));
+      const all  = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setCourses(all);
+
+      // Fetch question counts for all courses in parallel
+      const counts = await Promise.all(
+        all.map(async c => {
+          try {
+            const qSnap = await getDocs(query(
+              collection(db, 'questions'),
+              where('examType', '==', 'course_drill'),
+              where('course',   '==', c.id),
+              where('active',   '==', true),
+            ));
+            return [c.id, qSnap.size];
+          } catch {
+            return [c.id, 0];
+          }
+        })
+      );
+      setQuestionCounts(Object.fromEntries(counts));
     } catch (e) {
-      try {
-        const courseSnap = await getDocs(collection(db, 'courses'));
-        setCustomCourses(courseSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } catch { setCustomCourses([]); }
-      setDeletedDefaults([]);
+      console.error('CoursesManager load error:', e);
+      setCourses([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData(); }, [loadData]);
 
-  // ── Computed lists ─────────────────────────────────────────────
-  // All active courses for a given specialty
-  const coursesForSpecialty = (specialtyId) => {
-    // Default courses, excluding hidden ones, with Firestore overrides applied
-    const defaults = DEFAULT_NURSING_COURSES
-      .filter(c => c.category === specialtyId && !deletedDefaults.includes(c.id))
-      .map(c => {
-        // Check if admin has saved an override for this built-in course
-        const override = customCourses.find(fc => fc.id === c.id);
-        if (override) {
-          return { ...c, label: override.label, icon: override.icon, description: override.description, _source: 'default', _overridden: true };
-        }
-        return { ...c, _source: 'default', _overridden: false };
-      });
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const coursesForSpecialty = (specialtyId) =>
+    courses.filter(c => c.category === specialtyId);
 
-    // Custom courses (those whose id is NOT in DEFAULT_NURSING_COURSES)
-    const defaultIds = DEFAULT_NURSING_COURSES.map(c => c.id);
-    const customs = customCourses
-      .filter(c => c.category === specialtyId && !defaultIds.includes(c.id))
-      .map(c => ({ ...c, _source: 'custom' }));
-
-    return [...defaults, ...customs];
-  };
-
-  // Deleted default courses for a specialty (for restore section)
-  const deletedForSpecialty = (specialtyId) =>
-    DEFAULT_NURSING_COURSES.filter(c =>
-      c.category === specialtyId && deletedDefaults.includes(c.id)
-    );
-
-  const totalCustom = customCourses.filter(c =>
-    !DEFAULT_NURSING_COURSES.find(d => d.id === c.id)
-  ).length;
-
-  // ── Reset form ─────────────────────────────────────────────────
   const resetForm = () => {
-    setFormLabel(''); setFormIcon('📖'); setFormDesc('');
+    setFormLabel(''); setFormIcon('📖'); setFormDesc(''); setFormActive(true);
     setEditId(null); setShowAddForm(false); setShowIconPicker(false);
   };
 
-  // ── Save (add or edit) ─────────────────────────────────────────
+  // ── Save (add or edit) ────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!formLabel.trim()) { toast('Course name is required.', 'error'); return; }
     if (!selectedSpecialty) return;
     setSaving(true);
     try {
       if (editId) {
-        // Both custom and built-in overrides are saved to 'courses' collection with their id
-        await setDoc(doc(db, 'courses', editId), {
+        await updateDoc(doc(db, 'courses', editId), {
           label:       formLabel.trim(),
           icon:        formIcon || '📖',
-          category:    selectedSpecialty.id,
           description: formDesc.trim(),
+          active:      formActive,
           updatedAt:   serverTimestamp(),
-        }, { merge: true });
+        });
         toast('Course updated!', 'success');
       } else {
-        // New custom course
         const slug  = formLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
         const newId = `${selectedSpecialty.id}_${slug}_${Date.now()}`;
         await setDoc(doc(db, 'courses', newId), {
@@ -139,6 +122,7 @@ export default function CoursesManager() {
           icon:        formIcon || '📖',
           category:    selectedSpecialty.id,
           description: formDesc.trim(),
+          active:      formActive,
           createdAt:   serverTimestamp(),
         });
         toast('Course added!', 'success');
@@ -152,37 +136,47 @@ export default function CoursesManager() {
     }
   };
 
-  // ── Edit ───────────────────────────────────────────────────────
+  // ── Edit ──────────────────────────────────────────────────────────────────
   const handleEdit = (course) => {
     setFormLabel(course.label);
     setFormIcon(course.icon || '📖');
     setFormDesc(course.description || '');
+    setFormActive(course.active !== false); // default true if field missing
     setEditId(course.id);
     setShowAddForm(true);
     setShowIconPicker(false);
   };
 
-  // ── Delete / Hide ──────────────────────────────────────────────
+  // ── Toggle active/inactive ────────────────────────────────────────────────
+  const handleToggleActive = async (course) => {
+    const newActive = course.active === false ? true : false;
+    const label     = newActive ? 'visible to students' : 'hidden from students';
+    setTogglingId(course.id);
+    try {
+      await updateDoc(doc(db, 'courses', course.id), {
+        active:    newActive,
+        updatedAt: serverTimestamp(),
+      });
+      toast(`"${course.label}" is now ${label}.`, 'success');
+      await loadData();
+    } catch (e) {
+      toast('Toggle failed: ' + e.message, 'error');
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  // ── Delete ────────────────────────────────────────────────────────────────
   const handleDelete = async (course) => {
-    const isDefault = course._source === 'default';
-    const msg = isDefault
-      ? `Hide "${course.label}"?\n\nThis built-in course will be hidden from students but can be restored later.`
-      : `Delete "${course.label}"?\n\nThis custom course will be permanently removed.`;
-    if (!window.confirm(msg)) return;
+    const qCount = questionCounts[course.id] || 0;
+    const warn   = qCount > 0
+      ? `\n\n⚠️ This course has ${qCount} question${qCount !== 1 ? 's' : ''} linked to it. Those questions will still exist in the database but won't be reachable from this course.`
+      : '';
+    if (!window.confirm(`Permanently delete "${course.label}"?${warn}`)) return;
     setDeletingId(course.id);
     try {
-      if (isDefault) {
-        // Also remove any override doc so restore brings back original
-        try { await deleteDoc(doc(db, 'courses', course.id)); } catch { /* may not exist */ }
-        await setDoc(doc(db, 'deletedDefaultCourses', course.id), {
-          label: course.label,
-          deletedAt: serverTimestamp(),
-        });
-        toast(`"${course.label}" hidden from students.`, 'success');
-      } else {
-        await deleteDoc(doc(db, 'courses', course.id));
-        toast(`"${course.label}" deleted.`, 'success');
-      }
+      await deleteDoc(doc(db, 'courses', course.id));
+      toast(`"${course.label}" deleted.`, 'success');
       await loadData();
     } catch (e) {
       toast('Error: ' + e.message, 'error');
@@ -191,25 +185,14 @@ export default function CoursesManager() {
     }
   };
 
-  // ── Restore hidden default ─────────────────────────────────────
-  const handleRestore = async (course) => {
-    if (!window.confirm(`Restore "${course.label}"? It will reappear for students.`)) return;
-    try {
-      await deleteDoc(doc(db, 'deletedDefaultCourses', course.id));
-      toast(`"${course.label}" restored.`, 'success');
-      await loadData();
-    } catch (e) {
-      toast('Restore failed: ' + e.message, 'error');
-    }
-  };
-
-  // ══════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
   // LEVEL 1 — Specialty detail view
-  // ══════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
   if (selectedSpecialty) {
-    const allCourses    = coursesForSpecialty(selectedSpecialty.id);
-    const hiddenCourses = deletedForSpecialty(selectedSpecialty.id);
-    const filtered      = allCourses.filter(c =>
+    const allCourses   = coursesForSpecialty(selectedSpecialty.id);
+    const activeCourses   = allCourses.filter(c => c.active !== false);
+    const inactiveCourses = allCourses.filter(c => c.active === false);
+    const filtered     = allCourses.filter(c =>
       c.label.toLowerCase().includes(search.toLowerCase())
     );
 
@@ -241,8 +224,7 @@ export default function CoursesManager() {
               {selectedSpecialty.label}
             </h2>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 3 }}>
-              {allCourses.length} active course{allCourses.length !== 1 ? 's' : ''}
-              {hiddenCourses.length > 0 && ` · ${hiddenCourses.length} hidden`}
+              {activeCourses.length} active · {inactiveCourses.length} inactive
             </div>
           </div>
           <button
@@ -263,7 +245,7 @@ export default function CoursesManager() {
               {editId ? '✏️ Edit Course' : `➕ Add New Course to ${selectedSpecialty.shortLabel}`}
             </div>
 
-            {/* Icon row */}
+            {/* Icon */}
             <div style={{ marginBottom: 14 }}>
               <div style={styles.formLabel}>Course Icon</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -274,9 +256,7 @@ export default function CoursesManager() {
                     border: '2px solid var(--border)', borderRadius: 10,
                     padding: '8px 14px', cursor: 'pointer',
                   }}
-                >
-                  {formIcon}
-                </button>
+                >{formIcon}</button>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                   {showIconPicker ? 'Click an icon to select' : 'Click to change icon'}
                 </span>
@@ -316,7 +296,7 @@ export default function CoursesManager() {
             </div>
 
             {/* Description */}
-            <div className="form-group" style={{ marginBottom: 18 }}>
+            <div className="form-group" style={{ marginBottom: 14 }}>
               <label className="form-label">Description (optional)</label>
               <input
                 className="form-input"
@@ -325,6 +305,33 @@ export default function CoursesManager() {
                 value={formDesc}
                 onChange={e => setFormDesc(e.target.value)}
               />
+            </div>
+
+            {/* Active toggle */}
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              maxWidth: 400, background: 'var(--bg-secondary)', borderRadius: 10,
+              padding: '12px 16px', marginBottom: 18,
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Visible to Students
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {formActive ? 'Students can see and drill this course' : 'Hidden — students cannot see this course'}
+                </div>
+              </div>
+              <button onClick={() => setFormActive(v => !v)} style={{
+                width: 46, height: 26, borderRadius: 13, border: 'none', cursor: 'pointer',
+                background: formActive ? 'var(--teal)' : 'var(--border)',
+                position: 'relative', transition: 'background 0.25s', flexShrink: 0,
+              }}>
+                <div style={{
+                  width: 20, height: 20, borderRadius: '50%', background: '#fff',
+                  position: 'absolute', top: 3, left: formActive ? 23 : 3,
+                  transition: 'left 0.25s', boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+                }} />
+              </button>
             </div>
 
             {/* Preview */}
@@ -339,7 +346,7 @@ export default function CoursesManager() {
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{formLabel}</div>
                   <div style={{ fontSize: 11, color: selectedSpecialty.color, fontWeight: 600 }}>
-                    {selectedSpecialty.shortLabel}
+                    {selectedSpecialty.shortLabel} · {formActive ? '🟢 Active' : '🔴 Inactive'}
                   </div>
                 </div>
               </div>
@@ -357,7 +364,7 @@ export default function CoursesManager() {
           </div>
         )}
 
-        {/* ── Search ── */}
+        {/* Search */}
         {allCourses.length > 4 && (
           <input className="form-input"
             style={{ maxWidth: 300, marginBottom: 16, height: 40 }}
@@ -367,10 +374,10 @@ export default function CoursesManager() {
           />
         )}
 
-        {/* ── Course list ── */}
+        {/* Course list */}
         {loading ? (
           <div style={{ textAlign: 'center', padding: 40 }}><span className="spinner" /></div>
-        ) : filtered.length === 0 && !hiddenCourses.length ? (
+        ) : filtered.length === 0 ? (
           <div style={styles.emptyState}>
             <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div>
             <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 6 }}>
@@ -381,113 +388,92 @@ export default function CoursesManager() {
             </div>
           </div>
         ) : (
-          <>
-            {/* Active courses */}
-            {filtered.length > 0 && (
-              <>
-                <div style={styles.sectionLabel}>
-                  Active Courses ({filtered.length})
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
-                  {filtered.map(course => (
-                    <div key={course.id} style={{
-                      ...styles.courseRow,
-                      borderLeft: `4px solid ${course._source === 'custom' ? selectedSpecialty.color : course._overridden ? '#F59E0B' : 'var(--border)'}`,
-                    }}>
-                      <div style={{ ...styles.courseIcon, background: `${selectedSpecialty.color}18` }}>
-                        {course.icon || '📖'}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>
-                            {course.label}
-                          </span>
-                          <span style={{
-                            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20,
-                            background: course._source === 'custom'
-                              ? `${selectedSpecialty.color}20`
-                              : course._overridden
-                                ? 'rgba(245,158,11,0.15)'
-                                : 'var(--bg-tertiary)',
-                            color: course._source === 'custom'
-                              ? selectedSpecialty.color
-                              : course._overridden
-                                ? '#F59E0B'
-                                : 'var(--text-muted)',
-                            border: `1px solid ${course._source === 'custom' ? `${selectedSpecialty.color}40` : course._overridden ? 'rgba(245,158,11,0.4)' : 'var(--border)'}`,
-                          }}>
-                            {course._source === 'custom' ? '✨ Custom' : course._overridden ? '✏️ Edited' : '⚙️ Built-in'}
-                          </span>
-                        </div>
-                        {course.description && (
-                          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                            {course.description}
-                          </div>
-                        )}
-                      </div>
-                      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                        {/* Edit available for ALL courses — both custom and built-in */}
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          onClick={() => handleEdit(course)}
-                        >✏️ Edit</button>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          disabled={deletingId === course.id}
-                          onClick={() => handleDelete(course)}
-                          style={{ minWidth: 36 }}
-                        >
-                          {deletingId === course.id
-                            ? <span className="spinner spinner-sm" />
-                            : course._source === 'default' ? '🙈 Hide' : '🗑️'
-                          }
-                        </button>
-                      </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {filtered.map(course => {
+              const isActive = course.active !== false;
+              const qCount   = questionCounts[course.id] || 0;
+              return (
+                <div key={course.id} style={{
+                  ...styles.courseRow,
+                  borderLeft: `4px solid ${isActive ? selectedSpecialty.color : 'var(--border)'}`,
+                  opacity: isActive ? 1 : 0.65,
+                }}>
+                  <div style={{ ...styles.courseIcon, background: `${selectedSpecialty.color}18` }}>
+                    {course.icon || '📖'}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>
+                        {course.label}
+                      </span>
+                      {/* Active/Inactive badge */}
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20,
+                        background: isActive ? 'rgba(22,163,74,0.12)' : 'rgba(239,68,68,0.1)',
+                        color:      isActive ? '#16A34A'               : '#EF4444',
+                        border: `1px solid ${isActive ? 'rgba(22,163,74,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                      }}>
+                        {isActive ? '🟢 Active' : '🔴 Inactive'}
+                      </span>
                     </div>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {/* Hidden / deleted defaults (restore section) */}
-            {hiddenCourses.length > 0 && (
-              <>
-                <div style={{ ...styles.sectionLabel, color: '#EF4444' }}>
-                  Hidden Built-in Courses ({hiddenCourses.length}) — Not visible to students
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {hiddenCourses.map(course => (
-                    <div key={course.id} style={{ ...styles.courseRow, opacity: 0.6 }}>
-                      <div style={styles.courseIcon}>{course.icon || '📖'}</div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-primary)' }}>
-                          {course.label}
-                        </div>
-                        <div style={{ fontSize: 11, color: '#EF4444' }}>Hidden from students</div>
-                      </div>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => handleRestore(course)}
-                      >
-                        ↩️ Restore
-                      </button>
+                    <div style={{ display: 'flex', gap: 12, marginTop: 3, flexWrap: 'wrap' }}>
+                      {/* Question count */}
+                      <span style={{
+                        fontSize: 11, color: qCount > 0 ? selectedSpecialty.color : 'var(--text-muted)',
+                        fontWeight: 600,
+                      }}>
+                        {qCount > 0 ? `${qCount} question${qCount !== 1 ? 's' : ''}` : 'No questions yet'}
+                      </span>
+                      {course.description && (
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          {course.description}
+                        </span>
+                      )}
                     </div>
-                  ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+                    {/* Active toggle button */}
+                    <button
+                      className={`btn btn-sm ${isActive ? 'btn-ghost' : 'btn-primary'}`}
+                      disabled={togglingId === course.id}
+                      onClick={() => handleToggleActive(course)}
+                      style={{ minWidth: 80, fontSize: 11 }}
+                    >
+                      {togglingId === course.id
+                        ? <span className="spinner spinner-sm" />
+                        : isActive ? '🙈 Deactivate' : '✅ Activate'
+                      }
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => handleEdit(course)}
+                    >✏️</button>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      disabled={deletingId === course.id}
+                      onClick={() => handleDelete(course)}
+                      style={{ minWidth: 36 }}
+                    >
+                      {deletingId === course.id
+                        ? <span className="spinner spinner-sm" />
+                        : '🗑️'
+                      }
+                    </button>
+                  </div>
                 </div>
-              </>
-            )}
-          </>
+              );
+            })}
+          </div>
         )}
       </div>
     );
   }
 
-  // ══════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
   // LEVEL 0 — Specialty overview grid
-  // ══════════════════════════════════════════════════════════════
-  const totalCourses = NURSING_CATEGORIES.reduce(
-    (sum, cat) => sum + coursesForSpecialty(cat.id).length, 0
-  );
+  // ══════════════════════════════════════════════════════════════════════════
+  const totalCourses = courses.length;
+  const totalActive  = courses.filter(c => c.active !== false).length;
 
   return (
     <div style={{ padding: 24, maxWidth: 900 }}>
@@ -499,7 +485,7 @@ export default function CoursesManager() {
         </h2>
         <p style={{ color: 'var(--text-muted)', fontSize: 14, margin: '6px 0 0' }}>
           Courses appear in Course Drill for students.
-          {!loading && ` ${totalCourses} total courses · ${totalCustom} custom added.`}
+          {!loading && ` ${totalActive} active · ${totalCourses - totalActive} inactive · ${totalCourses} total.`}
         </p>
       </div>
 
@@ -509,9 +495,9 @@ export default function CoursesManager() {
         borderRadius: 12, padding: '14px 18px', marginBottom: 28,
         fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6,
       }}>
-        💡 <strong>How it works:</strong> Click a specialty to view and manage its courses.
-        Built-in courses can be <strong>edited</strong> or <strong>hidden</strong>. You can also add custom courses.
-        All changes reflect instantly on the student Course Drill page.
+        💡 <strong>How it works:</strong> Click a specialty to manage its courses.
+        Add courses, set them active or inactive, and see how many questions each course has.
+        Only <strong>active</strong> courses are visible to students.
       </div>
 
       {loading ? (
@@ -519,12 +505,10 @@ export default function CoursesManager() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
           {NURSING_CATEGORIES.map(cat => {
-            const courses     = coursesForSpecialty(cat.id);
-            const hidden      = deletedForSpecialty(cat.id).length;
-            const customCount = customCourses.filter(c => {
-              const defaultIds = DEFAULT_NURSING_COURSES.map(d => d.id);
-              return c.category === cat.id && !defaultIds.includes(c.id);
-            }).length;
+            const catCourses    = coursesForSpecialty(cat.id);
+            const activeCount   = catCourses.filter(c => c.active !== false).length;
+            const inactiveCount = catCourses.filter(c => c.active === false).length;
+            const totalQs       = catCourses.reduce((sum, c) => sum + (questionCounts[c.id] || 0), 0);
 
             return (
               <button
@@ -545,9 +529,13 @@ export default function CoursesManager() {
                     {cat.shortLabel}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    {courses.length} course{courses.length !== 1 ? 's' : ''}
-                    {customCount > 0 && <span style={{ color: cat.color }}> · {customCount} custom</span>}
-                    {hidden > 0 && <span style={{ color: '#EF4444' }}> · {hidden} hidden</span>}
+                    {activeCount > 0
+                      ? <span style={{ color: cat.color }}>{activeCount} active</span>
+                      : <span>0 active</span>
+                    }
+                    {inactiveCount > 0 && <span style={{ color: '#EF4444' }}> · {inactiveCount} inactive</span>}
+                    {totalQs > 0 && <span> · {totalQs} questions</span>}
+                    {catCourses.length === 0 && <span> · No courses yet</span>}
                   </div>
                 </div>
                 <span style={{ color: cat.color, fontSize: 18, fontWeight: 900, flexShrink: 0 }}>→</span>
@@ -577,10 +565,6 @@ const styles = {
   specialtyIcon: {
     width: 48, height: 48, borderRadius: 12, flexShrink: 0,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-  },
-  sectionLabel: {
-    fontWeight: 700, fontSize: 12, color: 'var(--text-muted)',
-    textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 12,
   },
   courseRow: {
     background: 'var(--bg-card)', border: '1px solid var(--border)',
