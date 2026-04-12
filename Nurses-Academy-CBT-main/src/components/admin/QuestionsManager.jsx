@@ -60,8 +60,12 @@ export default function QuestionsManager() {
   // ── Load courses from Firestore (replaces DEFAULT_NURSING_COURSES) ──────────
   const [firestoreCourses, setFirestoreCourses] = useState([]);
   useEffect(() => {
-    getDocs(query(collection(db, 'courses'), where('active', '==', true), orderBy('label', 'asc')))
-      .then(snap => setFirestoreCourses(snap.docs.map(d => ({ id: d.id, ...d.data() }))))
+    getDocs(collection(db, 'courses'))
+      .then(snap => {
+        const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        all.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+        setFirestoreCourses(all);
+      })
       .catch(() => {});
   }, []);
 
@@ -352,6 +356,19 @@ export default function QuestionsManager() {
                 <input className="form-input" placeholder="e.g. Cardiac Pharmacology" value={form.topic} onChange={e=>setForm(f=>({...f,topic:e.target.value}))} />
               </div>
             </>)}
+            {form.examType === 'daily_practice' && (
+              <div style={{
+                gridColumn: '1/-1',
+                background: 'rgba(13,148,136,0.08)', border: '1.5px solid rgba(13,148,136,0.35)',
+                borderRadius: 10, padding: '12px 16px', fontSize: 13, color: 'var(--text-primary)',
+              }}>
+                ⚡ <strong>Daily Practice</strong> — this question will appear when students pick{' '}
+                <strong style={{ color: 'var(--teal)' }}>
+                  {NURSING_CATEGORIES.find(c => c.id === form.category)?.shortLabel || form.category}
+                </strong>{' '}
+                as their daily practice category.
+              </div>
+            )}
             {form.examType !== 'course_drill' && form.examType !== 'topic_drill' && (
               <div className="form-group">
                 <label className="form-label">Year</label>
@@ -421,6 +438,21 @@ export default function QuestionsManager() {
                 {NURSING_CATEGORIES.map(c=><option key={c.id} value={c.id}>{c.shortLabel}</option>)}
               </select>
             </div>
+
+            {/* Daily Practice confirmation banner */}
+            {bulkMeta.examType === 'daily_practice' && (
+              <div style={{
+                gridColumn: '1/-1',
+                background: 'rgba(13,148,136,0.08)', border: '1.5px solid rgba(13,148,136,0.35)',
+                borderRadius: 10, padding: '12px 16px', fontSize: 13, color: 'var(--text-primary)',
+              }}>
+                ⚡ <strong>Daily Practice</strong> — questions will be served to students who pick{' '}
+                <strong style={{ color: 'var(--teal)' }}>
+                  {NURSING_CATEGORIES.find(c => c.id === bulkMeta.category)?.shortLabel || bulkMeta.category}
+                </strong>{' '}
+                as their category. Make sure the <strong>Category</strong> above matches what students should see these questions under.
+              </div>
+            )}
 
             {(bulkMeta.examType === 'course_drill' || bulkMeta.examType === 'topic_drill') && (
               <div className="form-group">
