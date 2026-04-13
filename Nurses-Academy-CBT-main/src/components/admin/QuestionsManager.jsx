@@ -16,6 +16,23 @@ import {
 } from '../../utils/questionParser';
 import { useToast } from '../shared/Toast';
 
+// ── NEW: Prepend "Question Bank (Unified Pool)" as the FIRST and recommended type ──
+// This is the type to use for all new uploads — the question is tagged with
+// course + topic, and is automatically available in Course Drill, Topic Drill,
+// and Daily Practice without uploading separately for each.
+const EXTENDED_EXAM_TYPES = [
+  {
+    id:    'question_bank',
+    label: '⭐ Question Bank (All Drills)',
+    hint:  'Tag with Course + Topic. One upload feeds Topic Drill, Course Drill, and Daily Practice automatically.',
+  },
+  ...ALL_EXAM_TYPES.filter(t => !['topic_drill','course_drill','daily_practice'].includes(t.id)),
+  // Keep the old drill types at the bottom for legacy/scheduled exam uploads
+  { id: 'topic_drill',    label: 'Topic Drill (Legacy)', hint: '' },
+  { id: 'course_drill',   label: 'Course Drill (Legacy)', hint: '' },
+  { id: 'daily_practice', label: 'Daily Practice (Legacy)', hint: '' },
+];
+
 export default function QuestionsManager() {
   const { toast }    = useToast();
   const [urlParams]  = useSearchParams();
@@ -35,21 +52,21 @@ export default function QuestionsManager() {
   const [page,       setPage]       = useState(0);
   const PAGE_SIZE = 20;
 
-  // Single add form
+  // Single add form — default to question_bank type
   const BLANK = {
     question: '', options: ['', '', '', ''], correctIndex: 0,
-    explanation: '', category: 'general_nursing', examType: 'past_questions',
+    explanation: '', category: 'general_nursing', examType: 'question_bank',
     year: '2024', subject: '', difficulty: 'medium', source: '', tags: '',
     topic: '', course: '', imageUrl: '', explanationImageUrl: '',
   };
   const [form, setForm] = useState({ ...BLANK });
 
-  // Bulk paste
+  // Bulk paste — default to question_bank type
   const [bulkText,   setBulkText]   = useState('');
   const [answerText, setAnswerText] = useState('');
   const [shuffleEnabled, setShuffleEnabled] = useState(true);
   const [bulkMeta,   setBulkMeta]   = useState({
-    category: 'general_nursing', examType: 'past_questions',
+    category: 'general_nursing', examType: 'question_bank',
     year: '2024', subject: '', difficulty: 'medium', source: '',
     topic: '', course: '',
   });
@@ -57,7 +74,7 @@ export default function QuestionsManager() {
   const [parseErr,  setParseErr]  = useState('');
   const [parseInfo, setParseInfo] = useState('');
 
-  // ── Load courses from Firestore (replaces DEFAULT_NURSING_COURSES) ──────────
+  // ── Load courses from Firestore ──────────────────────────────────────────
   const [firestoreCourses, setFirestoreCourses] = useState([]);
   useEffect(() => {
     getDocs(collection(db, 'courses'))
@@ -69,7 +86,7 @@ export default function QuestionsManager() {
       .catch(() => {});
   }, []);
 
-  // ── Load questions ──────────────────────────────────────────────
+  // ── Load questions ──────────────────────────────────────────────────────
   const loadQuestions = async () => {
     setLoading(true);
     try {
@@ -89,7 +106,7 @@ export default function QuestionsManager() {
 
   useEffect(() => { if (tab === 'list') loadQuestions(); }, [tab, filterCat, filterType, filterYear]);
 
-  // ── Single add ──────────────────────────────────────────────────
+  // ── Single add ────────────────────────────────────────────────────────────
   const handleSingleAdd = async (e) => {
     e.preventDefault();
     const q = { ...form, options: form.options.filter(o => o.trim()), tags: form.tags.split(',').map(t => t.trim()).filter(Boolean) };
@@ -131,18 +148,26 @@ export default function QuestionsManager() {
     toast(`${parsed.length} questions parsed!`, 'success');
   };
 
-  // ── Bulk upload ─────────────────────────────────────────────────
+  // ── Bulk upload ───────────────────────────────────────────────────────────
   const handleBulkUpload = async () => {
     if (parsedQs.length === 0) { toast('Nothing to upload.', 'error'); return; }
 
-    if (bulkMeta.examType === 'course_drill' && !bulkMeta.course) {
+    const isQBank = bulkMeta.examType === 'question_bank';
+
+    // Question bank uploads MUST have course. Topic is strongly recommended.
+    if (isQBank && !bulkMeta.course) {
+      toast('⚠️ Please select a Course for Question Bank uploads.', 'error');
+      return;
+    }
+    if (!isQBank && bulkMeta.examType === 'course_drill' && !bulkMeta.course) {
       toast('⚠️ Please select a Course before uploading course drill questions.', 'error');
       return;
     }
-    if (bulkMeta.examType === 'topic_drill' && (!bulkMeta.course || !bulkMeta.topic)) {
+    if (!isQBank && bulkMeta.examType === 'topic_drill' && (!bulkMeta.course || !bulkMeta.topic)) {
       toast('⚠️ Please set both Course and Topic for topic drill questions.', 'error');
       return;
     }
+
     setLoading(true);
     try {
       const now = new Date();
@@ -150,7 +175,11 @@ export default function QuestionsManager() {
       const timeStr = now.toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' });
 
       let examName = '';
-      if (bulkMeta.examType === 'course_drill') {
+      if (isQBank) {
+        const courseObj = firestoreCourses.find(c => c.id === bulkMeta.course);
+        const topicPart = bulkMeta.topic ? ` › ${bulkMeta.topic}` : '';
+        examName = `${courseObj?.label || bulkMeta.course}${topicPart} — ${dateStr}, ${timeStr}`;
+      } else if (bulkMeta.examType === 'course_drill') {
         const courseObj = firestoreCourses.find(c => c.id === bulkMeta.course);
         examName = `${courseObj?.label || bulkMeta.course} — ${dateStr}, ${timeStr}`;
       } else if (bulkMeta.examType === 'topic_drill') {
@@ -158,11 +187,11 @@ export default function QuestionsManager() {
         examName = `${courseObj?.label || bulkMeta.course} › ${bulkMeta.topic} — ${dateStr}, ${timeStr}`;
       } else {
         const catObj  = NURSING_CATEGORIES.find(c => c.id === bulkMeta.category);
-        const typeObj = ALL_EXAM_TYPES.find(t => t.id === bulkMeta.examType);
+        const typeObj = EXTENDED_EXAM_TYPES.find(t => t.id === bulkMeta.examType);
         examName = `${catObj?.shortLabel || bulkMeta.category} ${typeObj?.label || bulkMeta.examType} — ${dateStr}, ${timeStr}`;
       }
 
-      // Create exam doc
+      // Create exam doc (used for admin reference; question_bank exams are not shown to students)
       const examDoc = await addDoc(collection(db, 'exams'), {
         name:           examName,
         examType:       bulkMeta.examType,
@@ -173,12 +202,15 @@ export default function QuestionsManager() {
         year:           bulkMeta.year         || '2024',
         difficulty:     bulkMeta.difficulty   || 'medium',
         totalQuestions: parsedQs.length,
-        active:         true,
+        // question_bank exams are not browsable by students — they contribute
+        // to the shared pool instead. Set a flag so ExamListPage can skip them.
+        isPool:         isQBank,
+        active:         !isQBank, // legacy exams stay active; pool uploads hidden
         createdAt:      serverTimestamp(),
       });
       const examId = examDoc.id;
 
-      // Upload questions
+      // Upload questions in batches
       const batchSize = 500;
       for (let i = 0; i < parsedQs.length; i += batchSize) {
         const batch = writeBatch(db);
@@ -202,13 +234,9 @@ export default function QuestionsManager() {
     finally { setLoading(false); }
   };
 
-  // ── Sync exam's totalQuestions after any deletion ──────────────────────────
-  // If all questions are gone, also set active:false so the exam disappears
-  // from students' Course Drill / Topic Drill lists immediately.
+  // ── Sync exam question count after deletions ────────────────────────────
   const syncExamQuestionCount = async (examId) => {
     try {
-      // Count ALL remaining questions for this exam (not just active ones)
-      // so the exam totalQuestions and active flag stay accurate after deletions
       const snap = await getDocs(query(
         collection(db, 'questions'),
         where('examId', '==', examId),
@@ -223,20 +251,15 @@ export default function QuestionsManager() {
     }
   };
 
-  // ── Delete ──────────────────────────────────────────────────────
+  // ── Delete ────────────────────────────────────────────────────────────────
   const deleteQuestion = async (id) => {
     if (!window.confirm('Delete this question?')) return;
     try {
-      // Get the question's examId before deleting
       const qSnap = await getDoc(doc(db, 'questions', id));
       const examId = qSnap.exists() ? qSnap.data().examId : null;
-
       await deleteDoc(doc(db, 'questions', id));
       setQuestions(prev => prev.filter(q => q.id !== id));
-
-      // Update exam's totalQuestions count
       if (examId) await syncExamQuestionCount(examId);
-
       toast('Deleted.', 'success');
     } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
   };
@@ -244,31 +267,32 @@ export default function QuestionsManager() {
   const deleteSelected = async () => {
     if (selected.size === 0) return;
     const catLabel  = filterCat  ? (NURSING_CATEGORIES.find(c => c.id === filterCat)?.shortLabel  || filterCat)  : 'All Categories';
-    const typeLabel = filterType ? (ALL_EXAM_TYPES.find(t => t.id === filterType)?.label           || filterType) : 'All Types';
+    const typeLabel = filterType ? (EXTENDED_EXAM_TYPES.find(t => t.id === filterType)?.label      || filterType) : 'All Types';
     const yearLabel = filterYear ? filterYear : 'All Years';
     if (!window.confirm(
       `Delete ${selected.size} selected question(s)?\n\nFilter: ${catLabel} / ${typeLabel} / ${yearLabel}\n\nThis cannot be undone.`
     )) return;
     try {
-      // Collect examIds before deletion so we can update counts
       const examIds = new Set(
         questions.filter(q => selected.has(q.id) && q.examId).map(q => q.examId)
       );
-
       const batch = writeBatch(db);
       selected.forEach(id => batch.delete(doc(db, 'questions', id)));
       await batch.commit();
       setQuestions(prev => prev.filter(q => !selected.has(q.id)));
       setSelected(new Set());
-
-      // Update totalQuestions on each affected exam
       await Promise.all([...examIds].map(syncExamQuestionCount));
-
       toast(`Deleted.`, 'success');
     } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
   };
 
   const paged = questions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  // Helper: should we show course/topic fields for the current exam type?
+  const showCourseField = (examType) =>
+    ['question_bank', 'course_drill', 'topic_drill'].includes(examType);
+  const showTopicField = (examType) =>
+    ['question_bank', 'topic_drill'].includes(examType);
 
   return (
     <div style={{ padding: 24, maxWidth: 1200 }}>
@@ -299,9 +323,9 @@ export default function QuestionsManager() {
               <option value="">All Categories</option>
               {NURSING_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.shortLabel}</option>)}
             </select>
-            <select className="form-input" style={{ height:38, width:180 }} value={filterType} onChange={e => setFilterType(e.target.value)}>
+            <select className="form-input" style={{ height:38, width:210 }} value={filterType} onChange={e => setFilterType(e.target.value)}>
               <option value="">All Types</option>
-              {ALL_EXAM_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+              {EXTENDED_EXAM_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
             </select>
             <select className="form-input" style={{ height:38, width:120 }} value={filterYear} onChange={e => setFilterYear(e.target.value)}>
               <option value="">All Years</option>
@@ -321,7 +345,7 @@ export default function QuestionsManager() {
                   <thead>
                     <tr>
                       <th><input type="checkbox" onChange={e => setSelected(e.target.checked ? new Set(questions.map(q=>q.id)) : new Set())} /></th>
-                      <th>CATEGORY</th><th>TYPE</th><th>TOPIC / COURSE</th><th>YEAR</th><th>CREATED</th><th>D</th>
+                      <th>TYPE</th><th>COURSE</th><th>TOPIC</th><th>CATEGORY</th><th>CREATED</th><th>D</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -332,10 +356,14 @@ export default function QuestionsManager() {
                           e.target.checked ? s.add(q.id) : s.delete(q.id);
                           setSelected(s);
                         }}/></td>
+                        <td>
+                          <span className={`badge ${q.examType === 'question_bank' ? 'badge-teal' : 'badge-grey'}`}>
+                            {q.examType === 'question_bank' ? '⭐ Pool' : q.examType}
+                          </span>
+                        </td>
+                        <td style={{ fontSize:12 }}>{firestoreCourses.find(c=>c.id===q.course)?.label || q.course || '—'}</td>
+                        <td style={{ fontSize:12 }}>{q.topic || '—'}</td>
                         <td>{NURSING_CATEGORIES.find(c=>c.id===q.category)?.icon} {NURSING_CATEGORIES.find(c=>c.id===q.category)?.shortLabel || q.category}</td>
-                        <td><span className="badge badge-teal">{q.examType}</span></td>
-                        <td style={{ fontSize:12 }}>{q.course || q.topic || '—'}</td>
-                        <td>{q.year}</td>
                         <td style={{ fontSize:11, color:'var(--text-muted)', whiteSpace:'nowrap' }}>
                           {q.createdAt?.toDate
                             ? q.createdAt.toDate().toLocaleDateString('en-NG', { day:'2-digit', month:'short', year:'numeric' }) + ' ' +
@@ -373,46 +401,41 @@ export default function QuestionsManager() {
             </div>
             <div className="form-group">
               <label className="form-label">Exam Type</label>
-              <select className="form-input" value={form.examType} onChange={e=>setForm(f=>({...f,examType:e.target.value}))}>
-                {ALL_EXAM_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+              <select className="form-input" value={form.examType} onChange={e=>setForm(f=>({...f,examType:e.target.value,course:'',topic:''}))}>
+                {EXTENDED_EXAM_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
               </select>
             </div>
-            {form.examType === 'course_drill' && (
-              <div className="form-group">
-                <label className="form-label">Course *</label>
-                <select className="form-input" value={form.course} onChange={e=>setForm(f=>({...f,course:e.target.value}))}>
-                  <option value="">— Select Course —</option>
-                  {firestoreCourses.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
-                </select>
-              </div>
-            )}
-            {form.examType === 'topic_drill' && (<>
-              <div className="form-group">
-                <label className="form-label">Course *</label>
-                <select className="form-input" value={form.course} onChange={e=>setForm(f=>({...f,course:e.target.value}))}>
-                  <option value="">— Select Course —</option>
-                  {firestoreCourses.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
-                </select>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Topic *</label>
-                <input className="form-input" placeholder="e.g. Cardiac Pharmacology" value={form.topic} onChange={e=>setForm(f=>({...f,topic:e.target.value}))} />
-              </div>
-            </>)}
-            {form.examType === 'daily_practice' && (
+
+            {/* Question Bank banner */}
+            {form.examType === 'question_bank' && (
               <div style={{
                 gridColumn: '1/-1',
                 background: 'rgba(13,148,136,0.08)', border: '1.5px solid rgba(13,148,136,0.35)',
                 borderRadius: 10, padding: '12px 16px', fontSize: 13, color: 'var(--text-primary)',
               }}>
-                ⚡ <strong>Daily Practice</strong> — this question will appear when students pick{' '}
-                <strong style={{ color: 'var(--teal)' }}>
-                  {NURSING_CATEGORIES.find(c => c.id === form.category)?.shortLabel || form.category}
-                </strong>{' '}
-                as their daily practice category.
+                ⭐ <strong>Question Bank</strong> — set <strong>Course</strong> and <strong>Topic</strong> below.
+                This question will automatically appear in <strong>Course Drill</strong>, <strong>Topic Drill</strong>, and <strong>Daily Practice</strong>.
+                No separate uploads needed.
               </div>
             )}
-            {form.examType !== 'course_drill' && form.examType !== 'topic_drill' && (
+
+            {showCourseField(form.examType) && (
+              <div className="form-group">
+                <label className="form-label">Course {form.examType === 'question_bank' ? '*' : '* (required)'}</label>
+                <select className="form-input" value={form.course} onChange={e=>setForm(f=>({...f,course:e.target.value}))}>
+                  <option value="">— Select Course —</option>
+                  {firestoreCourses.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+                </select>
+              </div>
+            )}
+            {showTopicField(form.examType) && (
+              <div className="form-group">
+                <label className="form-label">Topic {form.examType === 'topic_drill' ? '* (required)' : '(recommended)'}</label>
+                <input className="form-input" placeholder="e.g. Fluid & Electrolytes" value={form.topic} onChange={e=>setForm(f=>({...f,topic:e.target.value}))} />
+              </div>
+            )}
+
+            {form.examType !== 'course_drill' && form.examType !== 'topic_drill' && form.examType !== 'question_bank' && (
               <div className="form-group">
                 <label className="form-label">Year</label>
                 <select className="form-input" value={form.year} onChange={e=>setForm(f=>({...f,year:e.target.value}))}>
@@ -450,10 +473,9 @@ export default function QuestionsManager() {
             <textarea className="form-input" rows={2} value={form.explanation} onChange={e=>setForm(f=>({...f,explanation:e.target.value}))} />
           </div>
 
-          {/* Question image — URL paste only (Firebase Storage not enabled) */}
           <div className="form-group">
             <label className="form-label">📷 Question Image URL (optional)</label>
-            <input className="form-input" placeholder="Paste image URL (e.g. from Imgur, Cloudinary, Google Drive)…"
+            <input className="form-input" placeholder="Paste image URL…"
               value={form.imageUrl} onChange={e=>setForm(f=>({...f,imageUrl:e.target.value}))} />
             {form.imageUrl && (
               <div style={{ marginTop:8, position:'relative', display:'inline-block' }}>
@@ -464,7 +486,6 @@ export default function QuestionsManager() {
             )}
           </div>
 
-          {/* Explanation image — URL paste only */}
           <div className="form-group">
             <label className="form-label">🖼️ Explanation Image URL (optional)</label>
             <input className="form-input" placeholder="Paste image URL for explanation diagram…"
@@ -499,7 +520,7 @@ export default function QuestionsManager() {
             <div className="form-group">
               <label className="form-label">Exam Type *</label>
               <select className="form-input" value={bulkMeta.examType} onChange={e=>setBulkMeta(m=>({...m,examType:e.target.value,course:'',topic:''}))}>
-                {ALL_EXAM_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+                {EXTENDED_EXAM_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
               </select>
             </div>
 
@@ -510,22 +531,22 @@ export default function QuestionsManager() {
               </select>
             </div>
 
-            {/* Daily Practice confirmation banner */}
-            {bulkMeta.examType === 'daily_practice' && (
+            {/* Question Bank banner */}
+            {bulkMeta.examType === 'question_bank' && (
               <div style={{
                 gridColumn: '1/-1',
                 background: 'rgba(13,148,136,0.08)', border: '1.5px solid rgba(13,148,136,0.35)',
                 borderRadius: 10, padding: '12px 16px', fontSize: 13, color: 'var(--text-primary)',
               }}>
-                ⚡ <strong>Daily Practice</strong> — questions will be served to students who pick{' '}
-                <strong style={{ color: 'var(--teal)' }}>
-                  {NURSING_CATEGORIES.find(c => c.id === bulkMeta.category)?.shortLabel || bulkMeta.category}
-                </strong>{' '}
-                as their category. Make sure the <strong>Category</strong> above matches what students should see these questions under.
+                ⭐ <strong>Question Bank (Unified Pool)</strong> — upload once, used everywhere.
+                Tag questions with <strong>Course + Topic</strong> below.
+                They will automatically feed <strong>Course Drill</strong> (by course), <strong>Topic Drill</strong> (by topic),
+                and <strong>Daily Practice</strong> (random mix of everything).
+                No need to re-upload for each drill type.
               </div>
             )}
 
-            {(bulkMeta.examType === 'course_drill' || bulkMeta.examType === 'topic_drill') && (
+            {showCourseField(bulkMeta.examType) && (
               <div className="form-group">
                 <label className="form-label" style={{ color:'var(--gold)' }}>Course * (required)</label>
                 <select className="form-input" value={bulkMeta.course} onChange={e=>setBulkMeta(m=>({...m,course:e.target.value}))}>
@@ -534,13 +555,16 @@ export default function QuestionsManager() {
                 </select>
               </div>
             )}
-            {bulkMeta.examType === 'topic_drill' && (
+            {showTopicField(bulkMeta.examType) && (
               <div className="form-group">
-                <label className="form-label" style={{ color:'var(--gold)' }}>Topic * (required)</label>
-                <input className="form-input" placeholder="e.g. Cardiac Pharmacology" value={bulkMeta.topic} onChange={e=>setBulkMeta(m=>({...m,topic:e.target.value}))} />
+                <label className="form-label" style={{ color: bulkMeta.examType === 'topic_drill' ? 'var(--gold)' : 'var(--text-secondary)' }}>
+                  Topic {bulkMeta.examType === 'topic_drill' ? '* (required)' : '(recommended)'}
+                </label>
+                <input className="form-input" placeholder="e.g. Fluid & Electrolytes" value={bulkMeta.topic} onChange={e=>setBulkMeta(m=>({...m,topic:e.target.value}))} />
               </div>
             )}
-            {bulkMeta.examType !== 'course_drill' && bulkMeta.examType !== 'topic_drill' && (
+
+            {bulkMeta.examType !== 'course_drill' && bulkMeta.examType !== 'topic_drill' && bulkMeta.examType !== 'question_bank' && (
               <div className="form-group">
                 <label className="form-label">Year</label>
                 <select className="form-input" value={bulkMeta.year} onChange={e=>setBulkMeta(m=>({...m,year:e.target.value}))}>
@@ -554,7 +578,8 @@ export default function QuestionsManager() {
                 {DIFFICULTY_LEVELS.map(d=><option key={d.id} value={d.id}>{d.label}</option>)}
               </select>
             </div>
-            {bulkMeta.examType !== 'course_drill' && bulkMeta.examType !== 'topic_drill' && bulkMeta.examType !== 'daily_practice' && (
+            {bulkMeta.examType !== 'course_drill' && bulkMeta.examType !== 'topic_drill'
+            && bulkMeta.examType !== 'daily_practice' && bulkMeta.examType !== 'question_bank' && (
               <div className="form-group">
                 <label className="form-label">Subject / Source</label>
                 <input className="form-input" placeholder="Optional" value={bulkMeta.subject} onChange={e=>setBulkMeta(m=>({...m,subject:e.target.value}))} />
@@ -563,13 +588,17 @@ export default function QuestionsManager() {
 
             {/* Exam name preview */}
             <div style={{ gridColumn:'1/-1', marginTop:4 }}>
-              <span style={{ fontSize:12, color:'var(--text-muted)' }}>📌 Exam will be named: </span>
+              <span style={{ fontSize:12, color:'var(--text-muted)' }}>📌 Batch will be named: </span>
               <span style={{ fontSize:12, color:'var(--teal)', fontWeight:700 }}>
                 {(() => {
                   const now = new Date();
                   const dateStr = now.toLocaleDateString('en-NG', { day:'2-digit', month:'short', year:'numeric' });
                   const timeStr = now.toLocaleTimeString('en-NG', { hour:'2-digit', minute:'2-digit' });
-                  if (bulkMeta.examType === 'course_drill') {
+                  if (bulkMeta.examType === 'question_bank') {
+                    const c = firestoreCourses.find(c=>c.id===bulkMeta.course);
+                    const topicPart = bulkMeta.topic ? ` › ${bulkMeta.topic}` : '';
+                    return `${c?.label || '(select course)'}${topicPart} — ${dateStr}, ${timeStr}`;
+                  } else if (bulkMeta.examType === 'course_drill') {
                     const c = firestoreCourses.find(c=>c.id===bulkMeta.course);
                     return `${c?.label || '(select course)'} — ${dateStr}, ${timeStr}`;
                   } else if (bulkMeta.examType === 'topic_drill') {
@@ -577,7 +606,7 @@ export default function QuestionsManager() {
                     return `${c?.label || '(select course)'} › ${bulkMeta.topic || '(enter topic)'} — ${dateStr}, ${timeStr}`;
                   } else {
                     const c = NURSING_CATEGORIES.find(c=>c.id===bulkMeta.category);
-                    const t = ALL_EXAM_TYPES.find(t=>t.id===bulkMeta.examType);
+                    const t = EXTENDED_EXAM_TYPES.find(t=>t.id===bulkMeta.examType);
                     return `${c?.shortLabel || ''} ${t?.label || ''} — ${dateStr}, ${timeStr}`;
                   }
                 })()}
