@@ -154,12 +154,20 @@ export function parseRationaleKey(answerText) {
 // ── Main Parser ───────────────────────────────────────────────────────
 
 export function parseQuestionsFromText(rawText, answerKeyText = '') {
-  const answerKey   = parseAnswerKey(answerKeyText);
+  const answerKey    = parseAnswerKey(answerKeyText);
   const rationaleMap = parseRationaleKey(answerKeyText);
   const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
   const questions = [];
   let current = null;
-  let qNumber = 0;
+
+  // ── FIX: Use a monotonically-increasing sequential counter instead of
+  // relying on the label number in the text.  This means duplicate question
+  // numbers (e.g. multiple questions labelled "84" in the source file) are
+  // treated as distinct questions and none are silently dropped.
+  // _qNumber still stores the *label* number for answer-key look-up; the
+  // deduplication guard has been removed from saveQuestion() so every parsed
+  // block is kept.
+  let seqCounter = 0;
 
   const optLetters = ['A', 'B', 'C', 'D', 'E'];
 
@@ -232,7 +240,6 @@ export function parseQuestionsFromText(rawText, answerKeyText = '') {
     if (!current) return;
     if (current.question && current.options.length >= 2) {
       // Always sort options into A→B→C→D order so array index == letter index.
-      // Without this, 2-per-line format (A,C then B,D) causes index mismatch.
       const sortedOpts = [...current.options].sort(
         (a, b) => optLetters.indexOf(a.letter) - optLetters.indexOf(b.letter)
       );
@@ -245,7 +252,6 @@ export function parseQuestionsFromText(rawText, answerKeyText = '') {
         correctLetter = answerKey[current.qNumber];
       }
 
-      // Use findIndex against the sorted letter list so index is always accurate
       const correctIdx = correctLetter !== null
         ? sortedOpts.findIndex(o => o.letter === correctLetter)
         : -1;
@@ -257,7 +263,8 @@ export function parseQuestionsFromText(rawText, answerKeyText = '') {
         explanation:    current.explanation || '',
         imageUrl:       current.imageUrl || '',
         explanationImageUrl: current.explanationImageUrl || '',
-        _qNumber:       current.qNumber,
+        _seq:           current.seq,        // stable sequential position (1-based)
+        _qNumber:       current.qNumber,    // label number from the source text
         _hasAnswer:     correctIdx >= 0,
         _sortedLetters: sortedOpts.map(o => o.letter),
       });
@@ -269,7 +276,8 @@ export function parseQuestionsFromText(rawText, answerKeyText = '') {
 
     if (isQuestionLine(line)) {
       saveQuestion();
-      qNumber = getQuestionNumber(line) || qNumber + 1;
+      seqCounter++;                                          // always increment
+      const labelNum = getQuestionNumber(line) || seqCounter;
 
       // Strip question number prefix
       let qText = line.replace(/^(\d+[\.\)]\s*|Q\s*\d+[\.\):\s]\s*|Question\s*\d+[\.\):\s]\s*)/i, '').trim();
@@ -281,12 +289,19 @@ export function parseQuestionsFromText(rawText, answerKeyText = '') {
       // Check if options are inline on same line
       const inlineOpts = extractInlineOptions(qText);
       if (inlineOpts && inlineOpts.length >= 2) {
-        // Remove options text from question
         const firstOptPos = qText.search(/\b[A-D]\.\s/);
         if (firstOptPos > 0) qText = qText.substring(0, firstOptPos).trim();
-        current = { question: qText, options: inlineOpts, answerLetter: null, explanation: '', qNumber, imageUrl: qImg.url, explanationImageUrl: '' };
+        current = {
+          question: qText, options: inlineOpts, answerLetter: null,
+          explanation: '', seq: seqCounter, qNumber: labelNum,
+          imageUrl: qImg.url, explanationImageUrl: '',
+        };
       } else {
-        current = { question: qText, options: [], answerLetter: null, explanation: '', qNumber, imageUrl: qImg.url, explanationImageUrl: '' };
+        current = {
+          question: qText, options: [], answerLetter: null,
+          explanation: '', seq: seqCounter, qNumber: labelNum,
+          imageUrl: qImg.url, explanationImageUrl: '',
+        };
       }
       continue;
     }
@@ -345,13 +360,15 @@ export function parseQuestionsFromText(rawText, answerKeyText = '') {
 
   saveQuestion();
 
-  // Sort by question number
-  questions.sort((a, b) => (a._qNumber || 0) - (b._qNumber || 0));
+  // Sort by sequential position (not label number) to preserve original order
+  // even when label numbers repeat or are out of order.
+  questions.sort((a, b) => (a._seq || 0) - (b._seq || 0));
 
   // Apply separate answer key.
-  // Strategy: try number-match first; if that fails for a question, fall back
-  // to positional alignment (answer key position i → questions[i]).
-  // Positional is the most robust because it doesn't depend on numbering matching.
+  // Strategy:
+  //   1. Try strict label-number match (answerKey[labelNum] → question with _qNumber === labelNum).
+  //   2. Positional fallback: answer-key position i → questions[i].
+  //      This is the most robust when numbering is non-unique.
   if (Object.keys(answerKey).length > 0) {
     // Build a positionally-ordered array of answer letters from the key
     const positionalAnswers = Object.entries(answerKey)
@@ -359,43 +376,32 @@ export function parseQuestionsFromText(rawText, answerKeyText = '') {
       .map(([, letter]) => letter);
 
     questions.forEach((q, posIdx) => {
-      // Always apply rationale from answer key if question has no inline explanation
+      // Apply rationale from answer key when question has no inline explanation
       if (!q.explanation && rationaleMap[q._qNumber]) {
         q.explanation = rationaleMap[q._qNumber];
       }
 
       if (q._hasAnswer) return; // inline answer already resolved — keep it
 
-      // 1. Try strict number match: answerKey[3] → question with _qNumber === 3
+      // 1. Try strict label-number match
       let letter = answerKey[q._qNumber];
 
-      // 2. Positional fallback: answer key position i → questions[i]
-      //    This is the most reliable when the question text numbering doesn't
-      //    match the answer key numbering (e.g. questions start at 1 but
-      //    answer key starts at 51 for a sub-section).
+      // 2. Positional fallback
       if (letter === undefined && posIdx < positionalAnswers.length) {
         letter = positionalAnswers[posIdx];
       }
 
       if (letter !== undefined) {
-        // Find the index of the correct letter within THIS question's sorted options.
-        // Using optLetters.indexOf(letter) was wrong — it returns the alphabet position
-        // (e.g. C=2) but the question may have fewer/reordered options so index 2
-        // might point to the wrong option. We must search q.options by letter instead.
-        // q.options stores plain text strings after saveQuestion(), so we reconstruct
-        // the letter mapping from sortedOpts order: A=0, B=1, C=2, D=3, E=4 only
-        // if all 4/5 options are present. Use a safer findIndex on the sorted structure.
         const idx = q._sortedLetters
           ? q._sortedLetters.indexOf(letter)
           : optLetters.indexOf(letter);
         q.correctIndex = idx >= 0 ? idx : 0;
         q._hasAnswer   = true;
       } else {
-        q.correctIndex = 0; // no answer found anywhere — default A
+        q.correctIndex = 0;
       }
     });
   } else {
-    // No separate answer key — ensure any -1 correctIndex defaults to 0
     questions.forEach(q => { if (q.correctIndex < 0) q.correctIndex = 0; });
   }
 
