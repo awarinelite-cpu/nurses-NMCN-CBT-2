@@ -7,6 +7,8 @@ import {
   signOut,
   sendPasswordResetEmail,
   updateProfile,
+  GoogleAuthProvider,
+  signInWithPopup,
 } from 'firebase/auth';
 import { doc, onSnapshot, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../firebase/config';
@@ -22,13 +24,10 @@ export function AuthProvider({ children }) {
     let profileUnsub = null;
 
     const authUnsub = onAuthStateChanged(auth, (firebaseUser) => {
-      // Clean up previous profile listener if any
       if (profileUnsub) { profileUnsub(); profileUnsub = null; }
 
       if (firebaseUser) {
         setUser(firebaseUser);
-        // Real-time listener — profile updates instantly whenever
-        // ExamSession (or anything else) writes to the user's Firestore doc
         profileUnsub = onSnapshot(
           doc(db, 'users', firebaseUser.uid),
           (snap) => {
@@ -76,7 +75,36 @@ export function AuthProvider({ children }) {
       streak:       0,
     };
     await setDoc(doc(db, 'users', cred.user.uid), profileData);
-    // onSnapshot will pick this up automatically
+    return cred;
+  };
+
+  // ── Google Sign-In ────────────────────────────────────────────────
+  const googleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    const cred = await signInWithPopup(auth, provider);
+    const { uid, displayName, email } = cred.user;
+
+    // Create profile doc only if it doesn't already exist
+    const userRef = doc(db, 'users', uid);
+    const snap = await import('firebase/firestore').then(({ getDoc }) => getDoc(userRef));
+    if (!snap.exists()) {
+      await setDoc(userRef, {
+        uid,
+        name:           displayName || '',
+        email:          email || '',
+        role:           'student',
+        subscribed:     false,
+        accessLevel:    'free',
+        createdAt:      serverTimestamp(),
+        examHistory:    [],
+        totalScore:     0,
+        totalExams:     0,
+        completedExams: [],
+        examScores:     {},
+        bookmarkCount:  0,
+        streak:         0,
+      });
+    }
     return cred;
   };
 
@@ -84,13 +112,12 @@ export function AuthProvider({ children }) {
 
   const resetPassword = (email) => sendPasswordResetEmail(auth, email);
 
-  // refreshProfile kept for compatibility but onSnapshot makes it redundant
   const refreshProfile = () => {};
 
   return (
     <AuthContext.Provider value={{
       user, profile, loading,
-      login, register, logout, resetPassword, refreshProfile,
+      login, register, logout, resetPassword, refreshProfile, googleLogin,
       isAdmin:      profile?.role === 'admin',
       isSubscribed: profile?.subscribed || profile?.accessLevel === 'full',
     }}>
