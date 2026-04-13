@@ -4,11 +4,14 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   collection, query, where, getDocs,
   addDoc, serverTimestamp, doc, updateDoc, arrayUnion,
-  deleteDoc, getDoc,
+  deleteDoc, getDoc, increment,
 } from 'firebase/firestore';
 import { db }      from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
 import { NURSING_CATEGORIES } from '../../data/categories';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const DAILY_PRACTICE_LIMIT = 250;
 
 export default function ExamSession() {
   const { state }   = useLocation();
@@ -17,7 +20,7 @@ export default function ExamSession() {
   const currentUser = auth.currentUser || auth.user || null;
   const profile     = auth.profile;
 
-  // ── All params come via router state from ExamSetupPage ──
+  // ── Decode navigation state ─────────────────────────────────────────────────
   const examId      = state?.examId      || '';
   const examName    = state?.examName    || 'Exam';
   const examType    = state?.examType    || 'daily_practice';
@@ -29,13 +32,13 @@ export default function ExamSession() {
   const timeLimit   = Number(state?.timeLimit || 0);
   const doShuffle   = state?.doShuffle  !== false;
   const reviewMode  = state?.reviewMode || false;
-  const examYear    = state?.examYear   || '';
 
-  const catInfo = NURSING_CATEGORIES.find(c => c.id === category);
+  // poolMode = true  → load directly from questions collection by tag filters
+  // poolMode = false → legacy path: load by examId (scheduled exams, past questions)
+  const poolMode    = state?.poolMode   || false;
 
-  // ── State ──
   const [questions,  setQuestions]  = useState([]);
-  const [phase,      setPhase]      = useState('loading'); // loading|exam|review|empty|error
+  const [phase,      setPhase]      = useState('loading');
   const [current,    setCurrent]    = useState(0);
   const [answers,    setAnswers]    = useState({});
   const [flagged,    setFlagged]    = useState(new Set());
@@ -45,47 +48,84 @@ export default function ExamSession() {
   const [aiExplain,  setAiExplain]  = useState({});
   const [submitted,  setSubmitted]  = useState(false);
   const [bookmarked, setBookmarked] = useState(new Set());
-  const [savedSessionId, setSavedSessionId] = useState(null);
+  const [reportedQs, setReportedQs] = useState(new Set());
+  const [reportText, setReportText] = useState('');
+  const [showReport, setShowReport] = useState(null);
   const startedAt = useRef(null);
 
-  // ── Load questions by examId ──────────────────────────────────────────────
+  // ── Load questions ──────────────────────────────────────────────────────────
   useEffect(() => {
     const load = async () => {
       try {
         let qs = [];
 
-        if (examId) {
-          const snap = await getDocs(query(
-            collection(db, 'questions'),
-            where('examId', '==', examId),
-            where('active', '==', true),
-          ));
+        if (poolMode) {
+          // ── UNIFIED POOL MODE ────────────────────────────────────────────────
+          // All 3 drill types pull from the shared questions collection.
+          // The only difference is the filter applied.
+
+          const baseConstraints = [where('active', '==', true)];
+
+          if (examType === 'topic_drill' && topic) {
+            // Topic Drill → exact topic match
+            baseConstraints.push(where('topic', '==', topic));
+          } else if (examType === 'course_drill' && course) {
+            // Course Drill → all topics under this course
+            baseConstraints.push(where('course', '==', course));
+          }
+          // Daily Practice → no extra filter (all active questions)
+
+          const snap = await getDocs(query(collection(db, 'questions'), ...baseConstraints));
           qs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        }
 
-        // Fallback: old questions uploaded without examId (legacy flow)
-        // Query by category + examType, then filter by year if provided
-        if (qs.length === 0 && examType && category) {
-          const constraints = [
-            where('examType', '==', examType),
-            where('category', '==', category),
-            where('active',   '==', true),
-          ];
-          if (examYear) constraints.push(where('year', '==', examYear));
-          const snap = await getDocs(query(collection(db, 'questions'), ...constraints));
-          qs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        }
+          // Seen-questions deduplication
+          const seenIds = profile?.seenQuestions || [];
+          const unseen  = qs.filter(q => !seenIds.includes(q.id));
 
-        if (doShuffle) qs = qs.sort(() => Math.random() - 0.5);
-        qs = qs.slice(0, count);
-        setQuestions(qs);
+          // Use unseen pool if it has enough questions; else reset (all questions)
+          const minViable = examType === 'daily_practice' ? 10 : 5;
+          const pool = unseen.length >= minViable ? unseen : qs;
 
-        if (reviewMode) {
-          // In review mode go straight to review, no submission needed
-          setPhase('review');
+          // Always shuffle for pool mode
+          pool.sort(() => Math.random() - 0.5);
+
+          // Cap daily practice at 250; drills use all available
+          const cap = examType === 'daily_practice' ? DAILY_PRACTICE_LIMIT : pool.length;
+          qs = pool.slice(0, cap);
+
         } else {
-          setPhase(qs.length > 0 ? 'exam' : 'empty');
+          // ── LEGACY EXAM-ID MODE (scheduled exams, past questions) ───────────
+          if (examId) {
+            const snap = await getDocs(query(
+              collection(db, 'questions'),
+              where('examId', '==', examId),
+              where('active', '==', true),
+            ));
+            qs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          }
+
+          // Fallback for legacy questions tagged by examType+category only
+          if (qs.length === 0 && examType && category) {
+            const snap = await getDocs(query(
+              collection(db, 'questions'),
+              where('examType', '==', examType),
+              where('category', '==', category),
+              where('active',   '==', true),
+            ));
+            qs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          }
+
+          // Seen-questions deduplication for legacy mode
+          const seenIds = profile?.seenQuestions || [];
+          const unseen  = qs.filter(q => !seenIds.includes(q.id));
+          const pool = unseen.length >= Math.min(count, 5) ? unseen : qs;
+
+          if (doShuffle) pool.sort(() => Math.random() - 0.5);
+          qs = pool.slice(0, count);
         }
+
+        setQuestions(qs);
+        setPhase(reviewMode ? 'review' : qs.length > 0 ? 'exam' : 'empty');
         startedAt.current = Date.now();
       } catch (e) {
         console.error('ExamSession load error:', e);
@@ -95,7 +135,7 @@ export default function ExamSession() {
     load();
   }, []);
 
-  // ── Timer ──────────────────────────────────────────────────────────────────
+  // ── Timer ───────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (phase !== 'exam' || timeLimit === 0) return;
     const timer = setInterval(() => {
@@ -107,7 +147,7 @@ export default function ExamSession() {
     return () => clearInterval(timer);
   }, [phase]);
 
-  // ── Submit ─────────────────────────────────────────────────────────────────
+  // ── Submit ──────────────────────────────────────────────────────────────────
   const handleSubmit = useCallback(async () => {
     if (submitted) return;
     setSubmitted(true);
@@ -118,45 +158,70 @@ export default function ExamSession() {
     const timeTaken    = Math.round((Date.now() - startedAt.current) / 1000);
     const correct      = questions.reduce((a, q) => a + (answers[q.id] === q.correctIndex ? 1 : 0), 0);
     const scorePercent = Math.round((correct / questions.length) * 100);
+    const questionIds  = questions.map(q => q.id);
+
+    // Build a human-readable session name for pool-mode sessions
+    const sessionName = poolMode
+      ? examType === 'daily_practice'
+        ? `Daily Practice — ${new Date().toLocaleDateString('en-NG', { day: '2-digit', month: 'short', year: 'numeric' })}`
+        : examType === 'course_drill'
+          ? `${courseLabel || course} — Course Drill`
+          : `${topic} — Topic Drill`
+      : examName;
 
     try {
-      const sessionRef = await addDoc(collection(db, 'examSessions'), {
+      // Save exam session
+      await addDoc(collection(db, 'examSessions'), {
         userId:         currentUser.uid,
-        examId,
-        examName,
+        examId:         examId || null,
+        examName:       sessionName,
         category:       category  || '',
         examType:       examType  || '',
         course:         course    || '',
         courseLabel:    courseLabel || '',
         topic:          topic     || '',
+        poolMode:       poolMode,
         correct,
         totalQuestions: questions.length,
         scorePercent,
         timeTaken,
         answers,
-        questionIds:    questions.map(q => q.id),
+        questionIds,
         completedAt:    serverTimestamp(),
       });
-      setSavedSessionId(sessionRef.id);
 
-      // Mark exam as attempted in user profile
-      if (examId) {
-        await updateDoc(doc(db, 'users', currentUser.uid), {
-          completedExams: arrayUnion(examId),
-        }).catch(() => {});
-      }
+      // Update user profile stats + mark questions as seen
+      const today = new Date().toDateString();
+      const lastPractice = profile?.lastPracticeDate;
+      const yesterday = new Date(Date.now() - 86400000).toDateString();
+      const newStreak = lastPractice === yesterday ? (profile?.streak || 0) + 1
+                      : lastPractice === today    ? (profile?.streak || 0)
+                      : 1;
+
+      await updateDoc(doc(db, 'users', currentUser.uid), {
+        completedExams:         arrayUnion(examId || sessionName),
+        seenQuestions:          arrayUnion(...questionIds),
+        totalExams:             increment(1),
+        totalScore:             increment(scorePercent),
+        totalQuestionsAnswered: increment(questions.length),
+        bestScore:              Math.max(profile?.bestScore || 0, scorePercent),
+        streak:                 newStreak,
+        lastPracticeDate:       today,
+        [`examScores.${examId || 'pool'}`]: scorePercent,
+      }).catch(() => {});
+
     } catch (e) {
       console.error('Session save error:', e);
     }
   }, [submitted, questions, answers, currentUser, examId, examName,
-      category, examType, course, courseLabel, topic]);
+      category, examType, course, courseLabel, topic, profile, poolMode]);
 
   // ── AI Explain ──────────────────────────────────────────────────────────────
   const getAiExplain = async (q) => {
     if (aiExplain[q.id]) return;
     setAiLoading(true);
     try {
-      const res  = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -183,7 +248,7 @@ export default function ExamSession() {
       if (isBookmarked) {
         const snap = await getDocs(query(
           collection(db, 'bookmarks'),
-          where('userId',     '==', currentUser.uid),
+          where('userId', '==', currentUser.uid),
           where('questionId', '==', q.id),
         ));
         snap.docs.forEach(d => deleteDoc(doc(db, 'bookmarks', d.id)));
@@ -200,32 +265,76 @@ export default function ExamSession() {
         });
         setBookmarked(prev => new Set(prev).add(q.id));
         await updateDoc(doc(db, 'users', currentUser.uid), {
-          bookmarkCount: (profile?.bookmarkCount || 0) + 1,
+          bookmarkCount: increment(1),
         }).catch(() => {});
       }
     } catch (e) { console.error('Bookmark error:', e); }
   };
 
-  // ── Retake: reset state and reload ─────────────────────────────────────────
+  // ── Report question ─────────────────────────────────────────────────────────
+  const submitReport = async (q) => {
+    if (!reportText.trim() || !currentUser?.uid) return;
+    try {
+      await addDoc(collection(db, 'questionReports'), {
+        questionId: q.id,
+        question:   q.question,
+        userId:     currentUser.uid,
+        report:     reportText.trim(),
+        createdAt:  serverTimestamp(),
+        status:     'pending',
+      });
+      setReportedQs(prev => new Set(prev).add(q.id));
+      setShowReport(null);
+      setReportText('');
+    } catch (e) { console.error('Report error:', e); }
+  };
+
+  // ── Retake ──────────────────────────────────────────────────────────────────
   const handleRetake = () => {
     setAnswers({});
     setFlagged(new Set());
     setCurrent(0);
     setSubmitted(false);
-    setSavedSessionId(null);
     setAiExplain({});
     setPhase('loading');
-    // Re-trigger load
+
     const load = async () => {
       try {
-        const snap = await getDocs(query(
-          collection(db, 'questions'),
-          where('examId', '==', examId),
-          where('active', '==', true),
-        ));
-        let qs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        if (doShuffle) qs = qs.sort(() => Math.random() - 0.5);
-        qs = qs.slice(0, count);
+        let qs = [];
+
+        if (poolMode) {
+          // Re-query the pool (will now exclude the questions just completed
+          // since they've been added to seenQuestions in Firestore).
+          // We read from the refreshed profile via auth — but since profile
+          // may not have re-fetched, we use the local questions list as extra
+          // seen IDs to avoid immediate repeats.
+          const justSeen = questions.map(q => q.id);
+          const baseConstraints = [where('active', '==', true)];
+          if (examType === 'topic_drill' && topic) baseConstraints.push(where('topic', '==', topic));
+          else if (examType === 'course_drill' && course) baseConstraints.push(where('course', '==', course));
+
+          const snap = await getDocs(query(collection(db, 'questions'), ...baseConstraints));
+          const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+          const seenIds = [...(profile?.seenQuestions || []), ...justSeen];
+          const unseen  = all.filter(q => !seenIds.includes(q.id));
+          const minViable = examType === 'daily_practice' ? 10 : 5;
+          const pool = unseen.length >= minViable ? unseen : all;
+
+          pool.sort(() => Math.random() - 0.5);
+          const cap = examType === 'daily_practice' ? DAILY_PRACTICE_LIMIT : pool.length;
+          qs = pool.slice(0, cap);
+        } else {
+          const snap = await getDocs(query(
+            collection(db, 'questions'),
+            where('examId', '==', examId),
+            where('active', '==', true),
+          ));
+          qs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          if (doShuffle) qs.sort(() => Math.random() - 0.5);
+          qs = qs.slice(0, count);
+        }
+
         setQuestions(qs);
         setTimeLeft(timeLimit * 60);
         setPhase(qs.length > 0 ? 'exam' : 'empty');
@@ -235,17 +344,16 @@ export default function ExamSession() {
     load();
   };
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-  const answered    = Object.keys(answers).length;
-  const unanswered  = questions.length - answered;
-  const mins        = String(Math.floor(timeLeft / 60)).padStart(2, '0');
-  const secs        = String(timeLeft % 60).padStart(2, '0');
-  const timerColor  = timeLeft < 60 ? '#EF4444' : timeLeft < 300 ? '#F59E0B' : 'var(--teal)';
-  const score       = questions.reduce((a, q) => a + (answers[q.id] === q.correctIndex ? 1 : 0), 0);
-  const scorePct    = questions.length > 0 ? Math.round((score / questions.length) * 100) : 0;
-  const scoreColor  = scorePct >= 70 ? '#16A34A' : scorePct >= 50 ? '#F59E0B' : '#EF4444';
+  const answered   = Object.keys(answers).length;
+  const unanswered = questions.length - answered;
+  const mins       = String(Math.floor(timeLeft / 60)).padStart(2, '0');
+  const secs       = String(timeLeft % 60).padStart(2, '0');
+  const timerColor = timeLeft < 60 ? '#EF4444' : timeLeft < 300 ? '#F59E0B' : 'var(--teal)';
+  const score      = questions.reduce((a, q) => a + (answers[q.id] === q.correctIndex ? 1 : 0), 0);
+  const scorePct   = questions.length > 0 ? Math.round((score / questions.length) * 100) : 0;
+  const scoreColor = scorePct >= 70 ? '#16A34A' : scorePct >= 50 ? '#F59E0B' : '#EF4444';
 
-  // ── Loading / empty / error phases ────────────────────────────────────────
+  // ── Phase renders ───────────────────────────────────────────────────────────
   if (phase === 'loading') return (
     <div style={S.center}>
       <div className="spinner" style={{ width: 40, height: 40 }} />
@@ -258,7 +366,16 @@ export default function ExamSession() {
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: 48, marginBottom: 16 }}>📭</div>
         <h3 style={{ color: 'var(--text-primary)', marginBottom: 8 }}>No questions found</h3>
-        <p style={{ color: 'var(--text-muted)', marginBottom: 20 }}>No questions are available for this exam yet.</p>
+        <p style={{ color: 'var(--text-muted)', marginBottom: 8 }}>
+          {poolMode
+            ? examType === 'topic_drill'
+              ? `No questions have been uploaded for topic "${topic}" yet.`
+              : examType === 'course_drill'
+                ? `No questions have been uploaded for this course yet.`
+                : `No questions are available in the question pool yet.`
+            : 'No questions are available for this exam yet.'
+          }
+        </p>
         <button className="btn btn-primary" onClick={() => navigate(-1)}>← Go Back</button>
       </div>
     </div>
@@ -268,8 +385,7 @@ export default function ExamSession() {
     <div style={S.center}>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
-        <h3 style={{ color: 'var(--text-primary)', marginBottom: 8 }}>Error loading questions</h3>
-        <p style={{ color: 'var(--text-muted)', marginBottom: 20 }}>Something went wrong. Please try again.</p>
+        <h3>Error loading questions</h3>
         <button className="btn btn-primary" onClick={() => navigate(-1)}>← Go Back</button>
       </div>
     </div>
@@ -285,16 +401,21 @@ export default function ExamSession() {
       <div style={{ minHeight: '100vh', background: 'var(--bg-primary)', padding: '24px 16px' }}>
         <div style={{ maxWidth: 760, margin: '0 auto' }}>
 
-          {/* Score card — hidden in pure review mode */}
+          {/* Score card */}
           {!reviewMode && (
             <div style={{
               background: 'var(--bg-card)', border: '1px solid var(--border)',
               borderRadius: 20, padding: 28, marginBottom: 24, textAlign: 'center',
             }}>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{examName}</div>
-              <div style={{ fontSize: 64, fontWeight: 900, color: scoreColor, lineHeight: 1 }}>
-                {scorePct}%
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>
+                {poolMode
+                  ? examType === 'daily_practice' ? '⚡ Daily Practice'
+                  : examType === 'course_drill'   ? `📖 Course Drill — ${courseLabel || course}`
+                  : `🎯 Topic Drill — ${topic}`
+                  : examName
+                }
               </div>
+              <div style={{ fontSize: 64, fontWeight: 900, color: scoreColor, lineHeight: 1 }}>{scorePct}%</div>
               <div style={{ fontSize: 16, color: 'var(--text-secondary)', margin: '8px 0 20px' }}>
                 {score} / {questions.length} correct
               </div>
@@ -319,22 +440,9 @@ export default function ExamSession() {
             position: 'sticky', top: 0, zIndex: 10,
             background: 'var(--bg-primary)', paddingBottom: 12, paddingTop: 4,
           }}>
-            <button className="btn btn-ghost" onClick={() => navigate(-2)}
-              style={{ flex: '1 1 100px' }}>
-              🏠 Back Home
-            </button>
-            {!reviewMode && (
-              <button className="btn btn-primary" onClick={handleRetake}
-                style={{ flex: '1 1 100px' }}>
-                🔄 Retake
-              </button>
-            )}
-            {reviewMode && (
-              <button className="btn btn-ghost" onClick={() => navigate(-1)}
-                style={{ flex: '1 1 100px' }}>
-                ← Back to Exams
-              </button>
-            )}
+            <button className="btn btn-ghost" onClick={() => navigate(poolMode ? -1 : -2)} style={{ flex: '1 1 100px' }}>🏠 Back Home</button>
+            {!reviewMode && <button className="btn btn-primary" onClick={handleRetake} style={{ flex: '1 1 100px' }}>🔄 Retake</button>}
+            {reviewMode && <button className="btn btn-ghost" onClick={() => navigate(-1)} style={{ flex: '1 1 100px' }}>← Back</button>}
           </div>
 
           {/* Questions review */}
@@ -350,23 +458,26 @@ export default function ExamSession() {
                   borderRadius: 14, padding: 20,
                   borderLeft: `4px solid ${reviewMode ? 'var(--teal)' : isCorrect ? '#16A34A' : isAnswered ? '#EF4444' : '#64748B'}`,
                 }}>
-                  <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                     <span style={{
                       width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
                       background: reviewMode ? 'var(--teal)' : isCorrect ? '#16A34A' : isAnswered ? '#EF4444' : '#64748B',
                       color: '#fff', fontWeight: 800, fontSize: 12,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>{i + 1}</span>
-                    <p style={{ margin: 0, fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                    <p style={{ margin: 0, fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', lineHeight: 1.5, flex: 1 }}>
                       {q.question}
                     </p>
+                    {/* Tags: topic + course visible in review */}
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
+                      {q.topic  && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, background: 'rgba(13,148,136,0.1)', color: 'var(--teal)', fontWeight: 700 }}>📌 {q.topic}</span>}
+                      {q.course && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>{q.course}</span>}
+                    </div>
                   </div>
 
-                  {/* Question image in review */}
                   {q.imageUrl && (
                     <div style={{ marginBottom: 12, textAlign: 'center' }}>
-                      <img src={q.imageUrl} alt="Question diagram"
-                        style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 10, border: '1px solid var(--border)', objectFit: 'contain' }} />
+                      <img src={q.imageUrl} alt="Question" style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 10, border: '1px solid var(--border)', objectFit: 'contain' }} />
                     </div>
                   )}
 
@@ -377,7 +488,6 @@ export default function ExamSession() {
                       let bg = 'var(--bg-tertiary)', color = 'var(--text-secondary)', border = 'var(--border)';
                       if (isCorrectOpt)            { bg = 'rgba(22,163,74,0.12)';  color = '#16A34A'; border = 'rgba(22,163,74,0.4)'; }
                       if (isUser && !isCorrectOpt) { bg = 'rgba(239,68,68,0.12)'; color = '#EF4444'; border = 'rgba(239,68,68,0.4)'; }
-
                       return (
                         <div key={j} style={{
                           padding: '10px 14px', borderRadius: 8, fontSize: 14,
@@ -401,36 +511,65 @@ export default function ExamSession() {
                     })}
                   </div>
 
+                  {/* Explanation from upload */}
                   {q.explanation && (
                     <div style={{
                       background: 'rgba(13,148,136,0.08)', border: '1px solid rgba(13,148,136,0.2)',
                       borderRadius: 8, padding: '10px 14px', fontSize: 13,
                       color: 'var(--text-secondary)', marginBottom: 8,
                     }}>
-                      💡 {q.explanation}
+                      <div style={{ fontWeight: 700, color: 'var(--teal)', marginBottom: 4, fontSize: 12 }}>
+                        💡 Explanation
+                      </div>
+                      {q.explanation}
                       {q.explanationImageUrl && (
                         <div style={{ marginTop: 10, textAlign: 'center' }}>
-                          <img src={q.explanationImageUrl} alt="Explanation diagram"
-                            style={{ maxWidth: '100%', maxHeight: 240, borderRadius: 8, border: '1px solid rgba(13,148,136,0.3)', objectFit: 'contain' }} />
+                          <img src={q.explanationImageUrl} alt="Explanation" style={{ maxWidth: '100%', maxHeight: 240, borderRadius: 8, border: '1px solid rgba(13,148,136,0.3)', objectFit: 'contain' }} />
                         </div>
                       )}
                     </div>
                   )}
 
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {/* Action buttons */}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+                    {/* AI Explain */}
                     <button className="btn btn-ghost btn-sm"
                       onClick={() => getAiExplain(q)}
                       disabled={aiLoading && !aiExplain[q.id]}
                       style={{ fontSize: 12 }}>
-                      {aiExplain[q.id] ? '🤖 AI Explanation' : aiLoading ? '⏳ Loading…' : '🤖 Ask AI to Explain'}
+                      {aiExplain[q.id] ? '🤖 AI Explained' : aiLoading ? '⏳ Loading…' : '🤖 Ask AI to Explain'}
                     </button>
-                    <button onClick={() => toggleBookmark(q)} style={{
-                      background: 'none', border: 'none', cursor: 'pointer',
-                      fontSize: 18, opacity: bookmarked.has(q.id) ? 1 : 0.4,
-                      color: bookmarked.has(q.id) ? '#F59E0B' : 'inherit',
-                    }} title={bookmarked.has(q.id) ? 'Remove bookmark' : 'Bookmark'}>🔖</button>
+
+                    {/* Bookmark — clearly labeled */}
+                    <button
+                      onClick={() => toggleBookmark(q)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6,
+                        padding: '5px 12px', borderRadius: 8, cursor: 'pointer',
+                        border: `1px solid ${bookmarked.has(q.id) ? 'rgba(245,158,11,0.5)' : 'var(--border)'}`,
+                        background: bookmarked.has(q.id) ? 'rgba(245,158,11,0.12)' : 'transparent',
+                        color: bookmarked.has(q.id) ? '#F59E0B' : 'var(--text-muted)',
+                        fontSize: 12, fontWeight: 700,
+                      }}
+                    >
+                      🔖 {bookmarked.has(q.id) ? 'Bookmarked ✓' : 'Bookmark this Question'}
+                    </button>
+
+                    {/* Report */}
+                    {!reportedQs.has(q.id) && (
+                      <button
+                        onClick={() => setShowReport(showReport === q.id ? null : q.id)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)', padding: '5px 8px' }}
+                      >
+                        🚩 Report
+                      </button>
+                    )}
+                    {reportedQs.has(q.id) && (
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>✓ Reported</span>
+                    )}
                   </div>
 
+                  {/* AI explanation result */}
                   {aiExplain[q.id] && (
                     <div style={{
                       marginTop: 8, background: 'rgba(124,58,237,0.08)',
@@ -439,6 +578,26 @@ export default function ExamSession() {
                       fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6,
                     }}>
                       🤖 {aiExplain[q.id]}
+                    </div>
+                  )}
+
+                  {/* Report input */}
+                  {showReport === q.id && (
+                    <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+                      <input
+                        value={reportText}
+                        onChange={e => setReportText(e.target.value)}
+                        placeholder="Describe the issue (wrong answer, typo, etc.)"
+                        style={{
+                          flex: 1, padding: '8px 12px', background: 'var(--bg-tertiary)',
+                          border: '1px solid var(--border)', borderRadius: 8,
+                          color: 'var(--text-primary)', fontSize: 13,
+                        }}
+                      />
+                      <button className="btn btn-sm" onClick={() => submitReport(q)}
+                        style={{ background: '#EF4444', color: '#fff', border: 'none', borderRadius: 8, padding: '0 12px', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+                        Submit
+                      </button>
                     </div>
                   )}
                 </div>
@@ -466,11 +625,14 @@ export default function ExamSession() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <div>
               <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)', lineHeight: 1.2 }}>
-                {examName}
+                {poolMode
+                  ? examType === 'daily_practice' ? '⚡ Daily Practice'
+                  : examType === 'course_drill'   ? `📖 ${courseLabel || 'Course Drill'}`
+                  : `🎯 ${topic || 'Topic Drill'}`
+                  : examName
+                }
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Q{current + 1} of {questions.length} · {answered} answered
-              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Q{current + 1} of {questions.length} · {answered} answered</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               {timeLimit > 0 && (
@@ -478,33 +640,24 @@ export default function ExamSession() {
                   ⏱ {mins}:{secs}
                 </div>
               )}
-              <button className="btn btn-danger btn-sm" onClick={() => {
-                if (window.confirm('Submit exam now?')) handleSubmit();
-              }}>Submit</button>
+              <button className="btn btn-danger btn-sm" onClick={() => { if (window.confirm('Submit exam now?')) handleSubmit(); }}>Submit</button>
             </div>
           </div>
           <div style={{ height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
-            <div style={{
-              height: '100%', borderRadius: 2, background: 'var(--teal)',
-              width: `${(answered / questions.length) * 100}%`, transition: 'width 0.3s',
-            }} />
+            <div style={{ height: '100%', borderRadius: 2, background: 'var(--teal)', width: `${(answered / questions.length) * 100}%`, transition: 'width 0.3s' }} />
           </div>
         </div>
       </div>
 
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '16px' }}>
 
-        {/* Question navigator toggle */}
-        <button className="btn btn-ghost btn-sm" style={{ marginBottom: 12 }}
-          onClick={() => setShowNav(v => !v)}>
+        {/* Question navigator */}
+        <button className="btn btn-ghost btn-sm" style={{ marginBottom: 12 }} onClick={() => setShowNav(v => !v)}>
           {showNav ? '▲ Hide' : '▼ Show'} Question Navigator
         </button>
 
         {showNav && (
-          <div style={{
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderRadius: 12, padding: 16, marginBottom: 16,
-          }}>
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: 16, marginBottom: 16 }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {questions.map((q, i) => {
                 const isAnswered = answers[q.id] !== undefined;
@@ -521,62 +674,51 @@ export default function ExamSession() {
                 );
               })}
             </div>
-            <div style={{ display: 'flex', gap: 16, marginTop: 10, flexWrap: 'wrap' }}>
-              {[
-                { color: '#16A34A', label: `Answered (${answered})` },
-                { color: '#F59E0B', label: `Flagged (${flagged.size})` },
-                { color: 'var(--text-muted)', label: `Unanswered (${unanswered})` },
-              ].map(l => (
-                <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: 3, background: l.color }} />
-                  <span style={{ color: 'var(--text-muted)' }}>{l.label}</span>
-                </div>
-              ))}
-            </div>
           </div>
         )}
 
         {/* Question card */}
         {q && (
-          <div style={{
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderRadius: 16, padding: 24, marginBottom: 16,
-          }}>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, padding: 24, marginBottom: 16 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
               {examType && (
-                <span style={{
-                  fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20,
-                  background: 'rgba(13,148,136,0.12)', color: 'var(--teal)',
-                  border: '1px solid rgba(13,148,136,0.3)',
-                }}>{examType.replace(/_/g, ' ')}</span>
+                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20, background: 'rgba(13,148,136,0.12)', color: 'var(--teal)', border: '1px solid rgba(13,148,136,0.3)' }}>
+                  {examType.replace(/_/g, ' ')}
+                </span>
               )}
-              {q.difficulty && (
-                <span style={{
-                  fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20,
-                  background: q.difficulty === 'hard' ? 'rgba(239,68,68,0.1)' : q.difficulty === 'easy' ? 'rgba(22,163,74,0.1)' : 'rgba(245,158,11,0.1)',
-                  color: q.difficulty === 'hard' ? '#EF4444' : q.difficulty === 'easy' ? '#16A34A' : '#F59E0B',
-                  border: `1px solid ${q.difficulty === 'hard' ? 'rgba(239,68,68,0.3)' : q.difficulty === 'easy' ? 'rgba(22,163,74,0.3)' : 'rgba(245,158,11,0.3)'}`,
-                }}>{q.difficulty}</span>
+              {q.topic  && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>📌 {q.topic}</span>}
+              {q.course && poolMode && examType === 'daily_practice' && (
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', opacity: 0.7 }}>· {q.course}</span>
               )}
-              <button onClick={() => setFlagged(prev => {
-                const s = new Set(prev); s.has(q.id) ? s.delete(q.id) : s.add(q.id); return s;
-              })} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, opacity: flagged.has(q.id) ? 1 : 0.4 }}
-                title="Flag for review">🚩</button>
-              <button onClick={() => toggleBookmark(q)} style={{
-                background: 'none', border: 'none', cursor: 'pointer', fontSize: 18,
-                opacity: bookmarked.has(q.id) ? 1 : 0.4, color: bookmarked.has(q.id) ? '#F59E0B' : 'inherit',
-              }} title={bookmarked.has(q.id) ? 'Remove bookmark' : 'Bookmark'}>🔖</button>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                {/* Flag */}
+                <button onClick={() => setFlagged(prev => { const s = new Set(prev); s.has(q.id) ? s.delete(q.id) : s.add(q.id); return s; })}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, opacity: flagged.has(q.id) ? 1 : 0.35 }}
+                  title="Flag for review">🚩</button>
+                {/* Bookmark — clearly labeled */}
+                <button onClick={() => toggleBookmark(q)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    background: bookmarked.has(q.id) ? 'rgba(245,158,11,0.12)' : 'rgba(255,255,255,0.05)',
+                    border: `1px solid ${bookmarked.has(q.id) ? 'rgba(245,158,11,0.4)' : 'var(--border)'}`,
+                    borderRadius: 8, padding: '4px 10px', cursor: 'pointer',
+                    color: bookmarked.has(q.id) ? '#F59E0B' : 'var(--text-muted)',
+                    fontSize: 12, fontWeight: 700,
+                  }}
+                  title={bookmarked.has(q.id) ? 'Remove bookmark' : 'Bookmark this question'}
+                >
+                  🔖 {bookmarked.has(q.id) ? 'Bookmarked' : 'Bookmark'}
+                </button>
+              </div>
             </div>
 
             <p style={{ fontSize: 17, fontWeight: 600, lineHeight: 1.65, color: 'var(--text-primary)', margin: '0 0 20px' }}>
               {q.question}
             </p>
 
-            {/* Question image */}
             {q.imageUrl && (
               <div style={{ marginBottom: 16, textAlign: 'center' }}>
-                <img src={q.imageUrl} alt="Question diagram"
-                  style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 10, border: '1px solid var(--border)', objectFit: 'contain' }} />
+                <img src={q.imageUrl} alt="Question diagram" style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 10, border: '1px solid var(--border)', objectFit: 'contain' }} />
               </div>
             )}
 
@@ -609,11 +751,9 @@ export default function ExamSession() {
           </div>
         )}
 
-        {/* Prev / Next / Finish */}
+        {/* Navigation */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-          <button className="btn btn-ghost" disabled={current === 0} onClick={() => setCurrent(c => c - 1)}>
-            ← Previous
-          </button>
+          <button className="btn btn-ghost" disabled={current === 0} onClick={() => setCurrent(c => c - 1)}>← Previous</button>
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{current + 1} / {questions.length}</span>
           {current < questions.length - 1 ? (
             <button className="btn btn-primary" onClick={() => setCurrent(c => c + 1)}>Next →</button>
@@ -631,9 +771,5 @@ export default function ExamSession() {
 }
 
 const S = {
-  center: {
-    display: 'flex', flexDirection: 'column',
-    justifyContent: 'center', alignItems: 'center',
-    minHeight: '100vh', background: 'var(--bg-primary)',
-  },
+  center: { display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: 'var(--bg-primary)' },
 };
