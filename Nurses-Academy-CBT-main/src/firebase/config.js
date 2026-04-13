@@ -4,7 +4,7 @@ import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: "AIzaSyAsSmqpkrXEMLL4wdoEn_jD3juAy8Z-w9A",
-  authDomain: "elitecarehub-a80da.firebaseapp.com",
+  authDomain: "nurses-nmcn-cbt.onrender.com",
   databaseURL: "https://elitecarehub-a80da-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "elitecarehub-a80da",
   storageBucket: "elitecarehub-a80da.firebasestorage.app",
