@@ -16,6 +16,9 @@ import AnalyticsPage     from './components/student/AnalyticsPage';
 import BookmarksPage     from './components/student/BookmarksPage';
 import SubscriptionPage  from './components/student/SubscriptionPage';
 
+// ── Payment page (Paystack + Manual bank transfer) ──────────────
+import PaymentPage       from './components/payment/PaymentPage';
+
 // Exam
 import ExamSetup          from './components/exam/ExamSetup';
 import ExamSession        from './components/exam/ExamSession';
@@ -64,6 +67,9 @@ export default function App() {
               {/* Full-screen exam pages (no sidebar) */}
               <Route path="/exam/session" element={<ProtectedRoute><ExamSession /></ProtectedRoute>} />
               <Route path="/exam/review"  element={<ProtectedRoute><ExamReviewPage /></ProtectedRoute>} />
+
+              {/* ── Payment page (full-screen, no sidebar) ───────────────── */}
+              <Route path="/payment" element={<ProtectedRoute><PaymentPage /></ProtectedRoute>} />
 
               {/* Authenticated layout */}
               <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
